@@ -16,12 +16,30 @@ export const getHealth = () => request('/health');
 export const getDashboard = (range = {}) =>
   request(`/dashboard/summary${qs(range)}`);
 
+export const getFailureBreakdown = (range = {}) =>
+  request(`/dashboard/failure-breakdown${qs(range)}`);
+
+export const getMethodDistribution = (range = {}) =>
+  request(`/dashboard/methods${qs(range)}`);
+
+export const getPaymentTrend = (range = {}) =>
+  request(`/dashboard/series${qs({ group: 'day', ...range })}`);
+
 // ---------- Payments ----------
 export const getPayments = (filters = {}) =>
   request(`/payments${qs(filters)}`);
 
 export const getPayment = (id) =>
   request(`/payments/${encodeURIComponent(id)}`);
+
+export const refundPayment = (id, payload = {}) =>
+  request(`/payments/${encodeURIComponent(id)}/refund`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const getPaymentSeries = (range = {}) =>
+  request(`/payments${qs({ group: 'day', ...range })}`);
 
 // ---------- UPI mandates ----------
 export const getMandates = (filters = {}) =>
@@ -43,6 +61,9 @@ export const verifyTestPayment = (payload) =>
 
 export const syncTestPayment = (paymentId) =>
   request('/checkout/payment', { method: 'POST', body: JSON.stringify({ payment_id: paymentId }) });
+
+export const reportCheckoutEvent = (event) =>
+  request('/webhooks/checkout', { method: 'POST', body: JSON.stringify(event) });
 
 // ---------- Anomalies ----------
 export const getAnomalies = (filters = {}) =>
@@ -81,3 +102,7 @@ export const askAgent = (payload) =>
 
 // ---------- Notifications ----------
 export const getNotifications = () => request('/notifications');
+
+// ---------- Cache ----------
+export const invalidateCache = () =>
+  request('/cache/invalidate', { method: 'POST', body: '{}' });

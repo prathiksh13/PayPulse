@@ -6,7 +6,7 @@ from ..services import checkout_flow
 from ..services.ai_pipeline import analyze_failures
 from ..services.analytics import checkout_analytics
 from ..services.checkout_service import ingest_session_events
-from ..services.checkout_service import CheckoutError
+from ..services.checkout_service import CheckoutError, record_order_started
 
 router = APIRouter(prefix="/checkout", tags=["checkout"])
 
@@ -40,12 +40,16 @@ def create_test_order(body: dict, db: Session = Depends(get_db)):
     """Create a Razorpay Order (Test Mode) for the Checkout SDK.
     Returns the public key_id only — never the key secret."""
     try:
-        return checkout_flow.create_order(
+        result = checkout_flow.create_order(
             db,
             body.get("amount"),
             body.get("currency") or "INR",
             body.get("receipt"),
         )
+        order_id = result.get("order_id")
+        if order_id:
+            record_order_started(db, order_id)
+        return result
     except CheckoutError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
 

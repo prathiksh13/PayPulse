@@ -38,6 +38,32 @@ export function UpiMandates() {
     return out;
   }, [rows]);
 
+  const trend = useMemo(() => {
+    const byDay = {};
+    rows.forEach((m) => {
+      const day = String(m.created_at || m.createdAt || '').slice(0, 10);
+      const bucket = byDay[day] || (byDay[day] = { date: day, active: 0, failed: 0 });
+      const st = String(m.status || '').toLowerCase();
+      if (['active', 'success', 'authorized'].includes(st)) bucket.active += 1;
+      if (['failed', 'rejected'].includes(st)) bucket.failed += 1;
+    });
+    return Object.values(byDay)
+      .filter((d) => d.date)
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [rows]);
+
+  const failureReasons = useMemo(() => {
+    const byReason = {};
+    rows.forEach((m) => {
+      const st = String(m.status || '').toLowerCase();
+      if (!['failed', 'rejected'].includes(st)) return;
+      const reason = String(m.failure_reason || m.failureReason || 'Unknown').slice(0, 48);
+      byReason[reason] = (byReason[reason] || 0) + 1;
+    });
+    return Object.entries(byReason)
+      .map(([name, count]) => ({ name, count, value: count }));
+  }, [rows]);
+
   const stat = (label, value, Icon, sub) => (
     <StatCard
       label={label}
@@ -65,15 +91,31 @@ export function UpiMandates() {
       <section className="chart-grid">
         <TrendChart
           title="Mandate success / failure trend"
-          subtitle="Mandate activations and failures over time (source: /api/mandates?group=day)"
-          unavailable
+          subtitle="Mandate activations and failures over time (from live /api/mandates)"
+          data={trend}
+          xKey="date"
+          series={[
+            { key: 'active', name: 'Active', color: '#10b981' },
+            { key: 'failed', name: 'Failed', color: '#ef4444' },
+          ]}
+          loading={list.loading}
+          unavailable={list.unavailable}
+          networkError={list.networkError}
+          errorText={list.error}
+          onRetry={list.refresh}
         />
         <BarChartView
           title="Mandate failure reasons"
-          subtitle="Why mandates fail to activate (source: /api/mandates?status=failed)"
-          unavailable
+          subtitle="Why mandates fail to activate (live data)"
+          data={failureReasons}
+          xKey="name"
+          barKey="count"
           layout="vertical"
-          percent
+          loading={list.loading}
+          unavailable={list.unavailable}
+          networkError={list.networkError}
+          errorText={list.error}
+          onRetry={list.refresh}
         />
       </section>
 

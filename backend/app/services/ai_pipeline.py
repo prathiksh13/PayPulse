@@ -8,7 +8,8 @@ import httpx
 from sqlalchemy.orm import Session
 
 from ..models import AiDecision, AuditLog, Payment, RecoveryAction
-from ..utils.helpers import now_utc, to_float
+from ..utils.helpers import iso, now_utc, to_float
+from ..utils.plog import plog
 from . import ai_agent
 from .anomalies import detect_and_store
 from .recovery_engine import ensure_candidates
@@ -37,8 +38,16 @@ def analyze_failures() -> dict:
 
     db = SessionLocal()
     try:
-        return _analyze(db)
+        plog("AI_PIPELINE_TRIGGERED source=post-payment-ingest")
+        result = _analyze(db)
+        if result.get("triggered"):
+            plog(f"AI_PIPELINE_COMPLETED failures={result.get('failures_analyzed', 0)} "
+                 f"anomalies={result.get('anomalies', 0)} source={result.get('source')}")
+        else:
+            plog("AI_PIPELINE_COMPLETED idle (no new failed payments or anomalies)")
+        return result
     except Exception as exc:  # noqa: BLE001 — never crash the request that scheduled us
+        plog(f"AI_PIPELINE_ERROR {exc!r}", level="error")
         try:
             db.rollback()
             db.add(AuditLog(
@@ -61,7 +70,10 @@ def _analyze(db: Session) -> dict:
     started = time.monotonic()
 
     # 1. Repeated-failure/anomaly detection from real DB stats (once/day/type).
+    plog("ANOMALY_CHECK_STARTED window_minutes=global")
     anomalies = detect_and_store(db)
+    if anomalies:
+        plog(f"ANOMALY_DETECTED count={len(anomalies)} types={[a.anomaly_type for a in anomalies]}")
 
     # 2. New failed payments (not yet turned into a recovery opportunity).
     cutoff = now_utc() - timedelta(minutes=RECENT_WINDOW_MINUTES)
@@ -82,6 +94,7 @@ def _analyze(db: Session) -> dict:
         .all()
     )
     new_failures = [p for p in failed_rows if p.payment_id not in covered]
+    plog(f"NEW_FAILURES_CHECK count={len(new_failures)} payment_ids={[p.payment_id for p in new_failures]}")
     if not new_failures and not anomalies:
         return {
             "triggered": False,
@@ -100,7 +113,7 @@ def _analyze(db: Session) -> dict:
             "failure_code": p.failure_code,
             "failure_reason": p.failure_reason,
             "attempt_count": p.attempt_count,
-            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "created_at": iso(p.created_at),
         }
         for p in new_failures
     ]
@@ -119,10 +132,12 @@ def _analyze(db: Session) -> dict:
     # 4. Get root cause + categorization + safe recommendation from Groq
     #    (deterministic classifier as a hard fallback — never blocks on the LLM).
     if ai_agent.settings.groq_configured and failures:
+        plog(f"AI_INVESTIGATION_STARTED failures={len(failures)} model={ai_agent.settings.groq_model}")
         try:
             classification = _classify_with_groq(failures, anomaly_summary)
             source = "groq"
-        except (ai_agent.GroqUnavailable, ValueError):
+        except Exception as exc:  # noqa: BLE001 — Groq must never break the pipeline
+            plog(f"GROQ_REQUEST_FALLBACK reason={exc!r} → deterministic classifier", level="warning")
             classification = _classify_deterministic(failures)
             source = "deterministic-fallback"
     else:
@@ -138,6 +153,8 @@ def _analyze(db: Session) -> dict:
     analyzed_ids = [p.payment_id for p in new_failures]
     if analyzed_ids:
         _enrich_recovery_actions(db, analyzed_ids, classification)
+    plog(f"RECOVERY_RECOMMENDATION_CREATED count={len(analyzed_ids)} "
+         f"actions={[SUPPORTED_ACTION_TEXT.get(f.get('recommended_action', 'retry'), 'retry') for f in failures]}")
 
     # 7. Store the investigation row.
     answer = _format_answer(classification, failures, anomalies, source)
@@ -157,6 +174,7 @@ def _analyze(db: Session) -> dict:
             "anomalies": anomaly_summary,
             "amount_at_risk": sum(f["amount_inr"] for f in failures),
             "classification": classification.get("summary"),
+            "source": source,
         },
         model=ai_agent.settings.groq_model if source.startswith("groq") else source,
         latency_ms=latency_ms,
@@ -227,7 +245,7 @@ def _enrich_recovery_actions(db: Session, payment_ids: list[str], classification
             rec.reason = info["root_cause"]
         evidence = rec.evidence or ""
         rec.evidence = (f"AI root cause: {info.get('root_cause') or 'n/a'}; categories: "
-                        f"{' / '.join(a.get('type', '') for a in info.get('anomalies', []) or [a])} — {evidence}").strip()
+                        f"{' / '.join(item.get('type', '') for item in info.get('anomalies', []))} — {evidence}").strip()
         if info.get("confidence"):
             rec.recovery_probability = round(to_float(info["confidence"]) * 100, 1)
         if info.get("risk"):
@@ -275,6 +293,9 @@ def _classify_with_groq(failures: list[dict], anomaly_summary: list[dict]) -> di
         "max_tokens": 700,
         "response_format": {"type": "json_object"},
     }
+    groq_started = time.monotonic()
+    plog(f"GROQ_REQUEST_STARTED model={ai_agent.settings.groq_model} failures={len(failures)} "
+         f"anomalies={len(anomaly_summary)} endpoint={ai_agent.settings.groq_api_base}")
     try:
         resp = httpx.post(
             f"{ai_agent.settings.groq_api_base}/chat/completions",
@@ -298,6 +319,10 @@ def _classify_with_groq(failures: list[dict], anomaly_summary: list[dict]) -> di
     if not isinstance(summary, dict):
         raise ValueError("Groq summary is not an object")
     per_failure = {f.get("payment_id"): f for f in failures_out if isinstance(f, dict)}
+    plog(f"GROQ_REQUEST_SUCCESS model={ai_agent.settings.groq_model} "
+         f"latency_ms={int((time.monotonic() - groq_started) * 1000)} "
+         f"category={summary.get('category')} root_cause={summary.get('root_cause')} "
+         f"recommended_action={summary.get('recommended_action')}")
     return {"summary": summary, "failures": failures, "per_failure": per_failure}
 
 

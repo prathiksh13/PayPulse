@@ -175,6 +175,7 @@ export function Payments() {
         open={!!viewing}
         paymentId={viewing}
         onClose={closeDrawer}
+        onMutation={payments.refresh}
         onRecovery={(p) => {
           closeDrawer();
           navigate('/recovery');

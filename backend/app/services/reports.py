@@ -5,9 +5,11 @@ from datetime import date, datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..models import (
+    AiDecision,
     Anomaly,
     DailyReport,
     Payment,
+    RecoveryAction,
 )
 from ..utils.helpers import iso, resolve_range, to_float
 from . import analytics as analytics_svc
@@ -46,15 +48,24 @@ def generate_report(db: Session, report_type: str, from_date: str | None, to_dat
         report_type = "daily"
     start, end = resolve_range(from_date, to_date)
     metrics = _base_metrics(db, from_date, to_date)
+    extra: dict = {}
 
     if report_type == "failure":
         extra["failure_breakdown"] = analytics_svc.failure_breakdown(db, from_date, to_date, limit=10)
         extra["by_code"] = analytics_svc.failure_code_breakdown(db, from_date, to_date, limit=10)
         extra["by_method"] = analytics_svc.method_distribution(db, from_date, to_date)
+        extra["failure_count"] = metrics.get("failed") or 0
+        extra["failure_total_amount"] = metrics.get("amount_at_risk") or 0
 
     if report_type == "recovery":
         extra["history"] = recovery_history(db, from_date, to_date, limit=50)
         extra["recovered_amount"] = metrics["amount_recovered"]
+        extra["pending_actions"] = (
+            db.query(RecoveryAction)
+            .filter(RecoveryAction.status.in_(("pending", "in_progress")))
+            .count()
+        )
+        extra["executed_actions"] = db.query(RecoveryAction).filter(RecoveryAction.status == "executed").count()
         extra["outstanding"] = (
             db.query(Payment)
             .filter(Payment.status.in_(("failed", "attempted")))
@@ -75,9 +86,20 @@ def generate_report(db: Session, report_type: str, from_date: str | None, to_dat
     if report_type == "ai_operations":
         active = db.query(Anomaly).filter(Anomaly.status == "active").count()
         resolved = db.query(Anomaly).filter(Anomaly.status == "resolved").count()
-        extra["anomalies"] = {"active": active, "resolved": resolved}
+        investigations = db.query(AiDecision).count()
+        pending = db.query(RecoveryAction).filter(RecoveryAction.status.in_(("pending", "in_progress"))).count()
+        executed = db.query(RecoveryAction).filter(RecoveryAction.status == "executed").count()
+        extra["anomalies"] = {"active": active, "resolved": resolved, "total": active + resolved}
+        extra["investigations"] = investigations
+        extra["recommendations"] = pending
+        extra["executed_actions"] = executed
+        extra["recovered_revenue"] = metrics["amount_recovered"]
         extra["agent"] = {
-            "actions_executed": db.query(Payment).count(),
+            "active_anomalies": active,
+            "resolved_anomalies": resolved,
+            "investigations": investigations,
+            "pending_actions": pending,
+            "actions_executed": executed,
             "recovered_revenue": metrics["amount_recovered"],
         }
 

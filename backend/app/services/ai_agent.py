@@ -7,7 +7,7 @@ import httpx
 
 from ..config import settings
 from ..models import AiDecision, Payment, RecoveryAction
-from ..utils.helpers import to_float
+from ..utils.helpers import iso, to_float
 from . import analytics as analytics_svc
 from .anomalies import (
     MIN_TRANSACTIONS,
@@ -129,7 +129,7 @@ def _exec(ctx: dict, name: str, args: dict) -> dict:
                     "status": p.status,
                     "failure_code": p.failure_code,
                     "failure_reason": p.failure_reason,
-                    "created_at": p.created_at.isoformat(),
+                    "created_at": iso(p.created_at),
                 }
                 for p in items
             ],
@@ -369,6 +369,7 @@ def _run_groq_loop(ctx: dict, question: str, from_date, to_date) -> tuple[str, l
 def agent_status(db) -> dict:
     from ..models import (
         Anomaly,
+        AuditLog,
         Payment,
         RecoveryAction,
         RecoveryOutcome,
@@ -384,10 +385,17 @@ def agent_status(db) -> dict:
     failures = db.query(Payment).filter(Payment.status.in_(("failed", "attempted"))).count()
 
     last_decision = db.query(AiDecision).order_by(AiDecision.created_at.desc()).first()
+    last_error = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "ai.failure_analysis.error")
+        .order_by(AuditLog.created_at.desc())
+        .first()
+    )
 
     return {
         "enabled": settings.groq_configured,
         "model": settings.groq_model if settings.groq_configured else "deterministic-fallback",
+        "groq_configured": settings.groq_configured,
         "issues_detected": active_anomalies + resolved_anomalies,
         "anomalies_active": active_anomalies,
         "investigations": decisions,
@@ -403,9 +411,13 @@ def agent_status(db) -> dict:
             "approve": "active",
             "execute": "done" if executed_actions else "waiting",
             "learn": "waiting",
+            "last_run_at": iso(last_decision.created_at) if last_decision else None,
+            "last_source": (last_decision.stats or {}).get("source") if last_decision else None,
+            "last_error": (last_error.detail or {}).get("error") if last_error else None,
+            "last_error_at": iso(last_error.created_at) if last_error else None,
         },
-        "last_active_at": last_decision.created_at.isoformat() if last_decision else None,
-        "updated_at": last_decision.created_at.isoformat() if last_decision else None,
+        "last_active_at": iso(last_decision.created_at) if last_decision else None,
+        "updated_at": iso(last_decision.created_at) if last_decision else None,
     }
 
 
@@ -428,8 +440,8 @@ def investigations(db) -> list[dict]:
                 "issue": a.likely_cause or a.anomaly_type,
                 "type": a.anomaly_type,
                 "what_happened": a.likely_cause,
-                "started_at": a.detected_at.isoformat(),
-                "detected_at": a.detected_at.isoformat(),
+                "started_at": iso(a.detected_at),
+                "detected_at": iso(a.detected_at),
                 "affected_methods": [a.affected_method] if a.affected_method else [],
                 "affected_amount": to_float(a.amount_at_risk) or 0,
                 "affected_transactions": a.affected_transactions or 0,
@@ -461,8 +473,8 @@ def investigations(db) -> list[dict]:
                 "issue": d.question,
                 "type": "ai_investigation",
                 "what_happened": d.answer,
-                "started_at": d.created_at.isoformat(),
-                "detected_at": d.created_at.isoformat(),
+                "started_at": iso(d.created_at),
+                "detected_at": iso(d.created_at),
                 "affected_methods": [],
                 "affected_amount": to_float(stats.get("amount_at_risk")) or 0,
                 "affected_transactions": stats.get("failures_analyzed") or 0,

@@ -22,6 +22,7 @@ def payment_status_from_rzp(status: str | None) -> str:
 
 
 def payment_to_dict(p: Payment, *, with_recovery: RecoveryAction | None = None) -> dict:
+    remaining = max(to_float(p.amount) - to_float(p.refunded_amount), 0)
     return {
         "id": p.payment_id,
         "payment_id": p.payment_id,
@@ -44,6 +45,8 @@ def payment_to_dict(p: Payment, *, with_recovery: RecoveryAction | None = None) 
         "description": p.description,
         "is_refunded": p.is_refunded,
         "refunded_amount": to_float(p.refunded_amount),
+        "remaining_refundable": remaining,
+        "can_refund": p.status in ("captured", "authorized") and remaining > 0,
         "attempt_count": p.attempt_count,
         "created_at": iso(p.created_at),
         "createdAt": iso(p.created_at),

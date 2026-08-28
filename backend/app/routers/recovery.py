@@ -2,16 +2,23 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import RecoveryAction, RecoveryOutcome
+from ..models import Payment, RecoveryAction, RecoveryOutcome
 from ..services.recovery_engine import (
     RecoveryBlocked,
+    _can_refund,
+    _can_retry,
     ensure_candidates,
     execute_recovery_action,
     recovery_history,
 )
 from ..services.serializers import recovery_to_dict
+from ..utils.helpers import iso
 
-router = APIRouter(prefix="/recovery", tags=["recovery"])
+# NOTE: no prefix here — main.py mounts this router at /api/recovery AND
+# /api/recovery-actions, so route paths (/actions, /actions/history, ...) must
+# be the full sub-path. Using a prefix here would double it (e.g.
+# /api/recovery/recovery/actions).
+router = APIRouter(tags=["recovery"])
 
 
 @router.get("/actions")
@@ -42,8 +49,28 @@ def list_actions(
         .limit(limit)
         .all()
     )
+    ids = [r.payment_id for r in rows]
+    payments = {
+        p.payment_id: p for p in db.query(Payment).filter(Payment.payment_id.in_(ids)).all()
+    }
+    items = []
+    for r in rows:
+        data = recovery_to_dict(r)
+        p = payments.get(r.payment_id)
+        if p:
+            data["payment_status"] = p.status
+            data["payment_method"] = p.method
+            data["payment_amount"] = p.amount
+            can_refund, why = _can_refund(p)
+            data["can_refund"] = can_refund
+            data["refund_blocked_reason"] = why
+        else:
+            data["payment_status"] = None
+            data["can_refund"] = False
+            data["refund_blocked_reason"] = "Payment record not found."
+        items.append(data)
     return {
-        "items": [recovery_to_dict(r) for r in rows],
+        "items": items,
         "total": total,
         "page": page or 1,
         "limit": limit,
@@ -80,6 +107,12 @@ def execute_action(
     except ValueError:
         raise HTTPException(status_code=404, detail="Recovery action not found")
     result = recovery_to_dict(rec)
+    payment = db.query(Payment).filter(Payment.payment_id == rec.payment_id).first()
+    if payment:
+        result["payment_status"] = payment.status
+        can_refund, why = _can_refund(payment)
+        result["can_refund"] = can_refund
+        result["refund_blocked_reason"] = why
     result["approved"] = True
     result["message"] = "Recovery action accepted and routed through the policy/safety layer."
     return {"ok": True, "action": result}
@@ -106,7 +139,7 @@ def outcomes(
                 "detail": o.detail,
                 "provider_ref_id": o.provider_ref_id,
                 "executed_by": o.executed_by,
-                "created_at": o.created_at.isoformat(),
+                "created_at": iso(o.created_at),
             }
             for o in rows
         ]

@@ -3,7 +3,7 @@ import { CreditCard, Loader2, ShieldCheck } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { Field, TextInput } from '../ui/Field';
-import { createTestPayOrder, verifyTestPayment, syncTestPayment } from '../../api';
+import { invalidateCache, createTestPayOrder, reportCheckoutEvent, verifyTestPayment, syncTestPayment } from '../../api';
 import { loadRazorpaySdk } from './razorpaySdk';
 import { useToast } from '../../context/ToastContext';
 
@@ -38,6 +38,7 @@ export function TestPaymentModal({ open, onClose, onComplete }) {
       toast('Payment recorded', 'success', {
         description: `${status.data.payment_id} · ${status.data.status}`,
       });
+      await invalidateCache().catch(() => {});
       onComplete?.(status.data);
       handleClose();
     } else {
@@ -58,6 +59,7 @@ export function TestPaymentModal({ open, onClose, onComplete }) {
       const synced = await syncTestPayment(pid);
       if (synced.ok) {
         toast('Failed payment recorded', 'info', { description: pid });
+        await invalidateCache().catch(() => {});
         onComplete?.(synced.data);
       }
     }
@@ -84,6 +86,12 @@ export function TestPaymentModal({ open, onClose, onComplete }) {
           ondismiss: () => {
             setPhase('idle');
             setBusy(false);
+            reportCheckoutEvent({
+              session_id: order.order_id,
+              event_type: 'checkout_closed',
+              order_id: order.order_id,
+              occurred_at: new Date().toISOString(),
+            }).catch(() => {});
             toast('Checkout cancelled', 'info');
           },
         },

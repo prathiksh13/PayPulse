@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..models import Anomaly, CheckoutSession, Payment, UpiMandate, CheckoutEvent
 from ..utils.helpers import now_utc, previous_period, resolve_range, to_float
+from ..utils.plog import plog
 
 FAILED_STATUSES = ("failed", "attempted")
 
@@ -18,9 +20,13 @@ METHOD_ANOMALY_TYPES = {
     "wallet": "payment_failure_spike",
 }
 
-MIN_TRANSACTIONS = 4          # minimum real failures to even consider an alert
+MIN_TRANSACTIONS = 2            # default; overridden by settings.anomaly_min_transactions
 FAILURE_RATE_MULTIPLIER = 2.5  # current window must exceed baseline rate by this factor
 CHECKOUT_RATE_DROP = 0.5       # current conversion below 50% of baseline
+
+
+def _min_tx() -> int:
+    return settings.anomaly_min_transactions
 
 
 def _failure_stats(db: Session, start, end):
@@ -90,10 +96,30 @@ def _mandate_stats(db: Session, start, end):
     return {"total": total, "failed": failed, "rate": round(failed / total * 100, 2) if total else 0}
 
 
+def _append_overall_spike(candidates: list[dict], total_cur: dict, total_base_rate: float, min_tx: int, method_spikes: set):
+    affected_methods = sorted(method_spikes) if method_spikes else "multiple methods"
+    candidates.append(
+        {
+            "type": "payment_failure_spike",
+            "severity": "critical" if total_cur["rate"] >= 50 or total_cur["failed"] >= 20 else "high",
+            "affected_method": None,
+            "current": total_cur["rate"],
+            "baseline": total_base_rate,
+            "affected": total_cur["failed"],
+            "amount_at_risk": total_cur["amount_at_risk"],
+            "cause": (
+                f"{total_cur['failed']} payments failed across {affected_methods} in this window "
+                f"({total_cur['rate']}%) vs a baseline of {total_base_rate}%."
+            ),
+        }
+    )
+
+
 def detect_and_store(db: Session, from_date: str | None = None, to_date: str | None = None) -> list[dict]:
     """Detect anomalies from real DB statistics and persist new ones once per day per type."""
     start, end = resolve_range(from_date, to_date)
     prev_start, prev_end = previous_period(start, end)
+    min_tx = _min_tx()
 
     candidates: list[dict] = []
 
@@ -101,7 +127,7 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
     current = _failure_stats(db, start, end)
     baseline = _failure_stats(db, prev_start, prev_end)
     for method, cur in current.items():
-        if cur["failed"] < MIN_TRANSACTIONS:
+        if cur["failed"] < min_tx:
             continue
         base = baseline.get(method, {})
         base_rate = base.get("rate", 0)
@@ -124,6 +150,38 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
                     ),
                 }
             )
+
+    # 1b. overall failure spike across all methods (fires even when the failed
+    #     methods are spread out and no single method crosses the threshold)
+    total_cur = {
+        "failed": sum(c["failed"] for c in current.values()),
+        "total": sum(c["total"] for c in current.values()),
+        "amount_at_risk": sum(c["amount_at_risk"] for c in current.values()),
+    }
+    total_base = {
+        "failed": sum(c["failed"] for c in baseline.values()),
+        "total": sum(c["total"] for c in baseline.values()),
+    }
+    total_base_rate = 0
+    if total_cur["total"]:
+        total_cur["rate"] = round(total_cur["failed"] / total_cur["total"] * 100, 2)
+        total_base_rate = round(total_base["failed"] / total_base["total"] * 100, 2) if total_base["total"] else 0
+        if total_cur["failed"] >= min_tx and (
+            (total_base["total"] == 0 and total_cur["rate"] >= 50)
+            or (total_base["total"] > 0 and total_cur["rate"] > total_base_rate * FAILURE_RATE_MULTIPLIER)
+        ):
+            method_spikes = {c["affected_method"] for c in candidates if c["affected_method"]}
+            if method_spikes:
+                already_covered = sum(c["affected"] for c in candidates if c["affected"] is not None)
+                if already_covered >= total_cur["failed"]:
+                    pass  # all failures already attributed to method-level spikes
+                else:
+                    _append_overall_spike(candidates, total_cur, total_base_rate, min_tx, method_spikes)
+            else:
+                _append_overall_spike(candidates, total_cur, total_base_rate, min_tx, set())
+    plog(f"ANOMALY_STATS failed={total_cur.get('failed', 0)} total={total_cur.get('total', 0)} "
+         f"rate={total_cur.get('rate', 0)} baseline_rate={total_base_rate if total_base.get('total') else 0} "
+         f"min_tx={min_tx} candidates={len(candidates)}")
 
     # 2. provider timeout spikes
     timeout_cur = (
@@ -148,7 +206,7 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
         .scalar()
         or 0
     )
-    if timeout_cur >= MIN_TRANSACTIONS and timeout_cur > timeout_base * FAILURE_RATE_MULTIPLIER:
+    if timeout_cur >= min_tx and timeout_cur > timeout_base * FAILURE_RATE_MULTIPLIER:
         candidates.append(
             {
                 "type": "provider_timeout_increase",
@@ -168,7 +226,7 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
     # 3. checkout conversion drop
     cc = _checkout_stats(db, start, end)
     cb = _checkout_stats(db, prev_start, prev_end)
-    if cb["started"] >= MIN_TRANSACTIONS and cc["rate"] < cb["rate"] * CHECKOUT_RATE_DROP and cc["rate"] < 50:
+    if cb["started"] >= min_tx and cc["rate"] < cb["rate"] * CHECKOUT_RATE_DROP and cc["rate"] < 50:
         candidates.append(
             {
                 "type": "checkout_conversion_drop",
@@ -188,7 +246,7 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
     # 4. mandate failure spike
     mc = _mandate_stats(db, start, end)
     mb = _mandate_stats(db, prev_start, prev_end)
-    if mc["failed"] >= MIN_TRANSACTIONS and (mc["rate"] > (mb["rate"] * FAILURE_RATE_MULTIPLIER) or (mb["rate"] == 0 and mc["rate"] >= 50)):
+    if mc["failed"] >= min_tx and (mc["rate"] > (mb["rate"] * FAILURE_RATE_MULTIPLIER) or (mb["rate"] == 0 and mc["rate"] >= 50)):
         candidates.append(
             {
                 "type": "mandate_failure_spike",
@@ -218,7 +276,7 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
         .scalar()
         or 0
     )
-    if retry_cur >= MIN_TRANSACTIONS and retry_cur > retry_base * FAILURE_RATE_MULTIPLIER:
+    if retry_cur >= min_tx and retry_cur > retry_base * FAILURE_RATE_MULTIPLIER:
         candidates.append(
             {
                 "type": "unusual_retry_rate",
@@ -235,19 +293,28 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
             }
         )
 
-    day = start.date().isoformat()
+    detection_day = now_utc().date().isoformat()
     stored: list[dict] = []
     for cand in candidates:
         existing = (
             db.query(Anomaly)
             .filter(
                 Anomaly.anomaly_type == cand["type"],
-                func.date(Anomaly.detected_at) == day,
+                func.substr(Anomaly.detected_at, 1, 10) == detection_day,
                 Anomaly.status == "active",
             )
             .first()
         )
         if existing:
+            # Keep one active anomaly per type/day, but refresh its metrics as
+            # additional real payment events arrive.
+            existing.severity = cand["severity"]
+            existing.metric_current = cand["current"]
+            existing.metric_baseline = cand["baseline"]
+            existing.affected_transactions = cand["affected"]
+            existing.amount_at_risk = cand["amount_at_risk"]
+            existing.affected_method = cand["affected_method"]
+            existing.likely_cause = cand["cause"]
             stored.append(existing)
             continue
         anomaly = Anomaly(
@@ -270,6 +337,19 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
         db.add(anomaly)
         stored.append(anomaly)
 
+    db.commit()
+
+    db.execute(
+        text(
+            """
+            DELETE FROM anomalies
+            WHERE id NOT IN (
+                SELECT MIN(id) FROM anomalies
+                GROUP BY anomaly_type, substr(detected_at, 1, 10), status
+            )
+            """
+        )
+    )
     db.commit()
     return stored
 

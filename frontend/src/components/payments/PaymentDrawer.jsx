@@ -1,5 +1,5 @@
 import { useApi } from '../../hooks/useApi';
-import { getPayment } from '../../api';
+import { getPayment, invalidateCache, refundPayment } from '../../api';
 import { Drawer } from '../ui/Drawer';
 import { Skeleton } from '../ui/Skeleton';
 import { ErrorState } from '../ui/ErrorState';
@@ -8,6 +8,7 @@ import { PaymentStatusBadge } from '../ui/StatusBadge';
 import { Button } from '../ui/Button';
 import { fmtINR, fmtDateTime, titleCase } from '../../utils/format';
 import { useToast } from '../../context/ToastContext';
+import { useState } from 'react';
 
 function Row({ label, value }) {
   return (
@@ -18,8 +19,10 @@ function Row({ label, value }) {
   );
 }
 
-export function PaymentDrawer({ open, onClose, paymentId, onRecovery }) {
+export function PaymentDrawer({ open, onClose, paymentId, onRecovery, onMutation }) {
   const toast = useToast();
+  const [confirmRefund, setConfirmRefund] = useState(false);
+  const [refunding, setRefunding] = useState(false);
   const { data: d, loading, unavailable, networkError, error, refresh } = useApi(
     () => getPayment(paymentId),
     [paymentId],
@@ -36,6 +39,28 @@ export function PaymentDrawer({ open, onClose, paymentId, onRecovery }) {
       toast('No recovery recommendation yet', 'info', {
         description: 'The AI agent has not generated a recovery action for this payment.',
       });
+    }
+  };
+
+  const doRefund = async () => {
+    setRefunding(true);
+    try {
+      const res = await refundPayment(p.id);
+      if (res.ok) {
+        toast('Refund initiated', 'success', {
+          description: `${fmtINR(res.data?.refund?.amount)} refunded · ${res.data?.refund?.status}`,
+        });
+        await invalidateCache().catch(() => {});
+        refresh();
+        onMutation?.();
+        setConfirmRefund(false);
+      } else {
+        toast('Refund failed', 'error', { description: res.error?.detail || res.error });
+      }
+    } catch (e) {
+      toast('Refund failed', 'error', { description: String(e?.message || e) });
+    } finally {
+      setRefunding(false);
     }
   };
 
@@ -113,6 +138,43 @@ export function PaymentDrawer({ open, onClose, paymentId, onRecovery }) {
               </div>
             </div>
           ) : null}
+
+          {p.can_refund ? (
+            <div className="drawer-section">
+              <h4>Refund</h4>
+              <div className="detail-grid">
+                <Row label="Settled amount" value={p.amount != null ? fmtINR(p.amount) : null} />
+                <Row label="Already refunded" value={p.refunded_amount != null ? fmtINR(p.refunded_amount) : null} />
+                <Row label="Refundable" value={p.remaining_refundable != null ? fmtINR(p.remaining_refundable) : null} />
+              </div>
+              <div className="drawer-actions">
+                {!confirmRefund ? (
+                  <Button size="sm" variant="danger" onClick={() => setConfirmRefund(true)} disabled={refunding}>
+                    Refund payment
+                  </Button>
+                ) : (
+                  <>
+                    <Button size="sm" variant="danger" onClick={doRefund} disabled={refunding}>
+                      {refunding ? 'Refunding…' : `Confirm refund ${fmtINR(p.remaining_refundable)}`}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setConfirmRefund(false)} disabled={refunding}>
+                      Cancel
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {p.refunded_amount > 0 && (
+            <div className="drawer-section">
+              <h4>Refund status</h4>
+              <div className="detail-grid">
+                <Row label="Status" value={p.status === 'refunded' ? 'Fully refunded' : p.status === 'partially_refunded' ? `Partially refunded (${fmtINR(p.refunded_amount)})` : p.status} />
+                <Row label="Refunded amount" value={fmtINR(p.refunded_amount)} />
+              </div>
+            </div>
+          )}
 
           {p.timeline && p.timeline.length > 0 ? (
             <div className="drawer-section">

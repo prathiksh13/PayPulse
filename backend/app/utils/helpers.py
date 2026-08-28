@@ -11,11 +11,24 @@ def now_utc() -> datetime:
 
 
 def iso(dt: datetime | date | None) -> str | None:
+    """Serialize a timestamp as a timezone-qualified ISO-8601 string (UTC).
+
+    SQLite stores DateTime(timezone=True) columns as naive UTC strings, which
+    lost their offset when re-serialized with plain isoformat(). Clients then
+    parsed them as LOCAL time and every timestamp showed ~5.5h off. We treat
+    naive values as UTC and always emit an explicit ``Z`` so frontends convert
+    to the user's timezone consistently."""
     if dt is None:
         return None
+    if isinstance(dt, str):
+        return dt
     if isinstance(dt, date) and not isinstance(dt, datetime):
         return dt.isoformat()
-    return dt.isoformat()
+    if not isinstance(dt, datetime):
+        return str(dt)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def to_float(value) -> float | None:

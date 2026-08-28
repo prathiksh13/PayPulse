@@ -5,9 +5,12 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import MandateEvent, Payment, UpiMandate
 from ..services.serializers import mandate_to_dict
-from ..utils.helpers import resolve_range
+from ..utils.helpers import iso, resolve_range
 
-router = APIRouter(prefix="/mandates", tags=["upti-mandates"])
+# NOTE: no prefix here — main.py mounts this router at /api/mandates AND
+# /api/upi-mandates, so the route paths ('', /{mandate_id}) are the full
+# sub-path. A router prefix would double it (e.g. /api/mandates/mandates).
+router = APIRouter(tags=["upti-mandates"])
 
 
 @router.get("")
@@ -66,8 +69,8 @@ def get_mandate_detail(mandate_id: str, db: Session = Depends(get_db)):
             "status": e.status,
             "event": e.event_type,
             "description": e.error_reason or (e.status or ""),
-            "created_at": e.received_at.isoformat(),
-            "at": e.received_at.isoformat(),
+            "created_at": iso(e.received_at),
+            "at": iso(e.received_at),
         }
         for e in events
     ]
@@ -89,5 +92,5 @@ def debit_to_dict(p: Payment) -> dict:
         "amount": float(p.amount) if p.amount is not None else None,
         "failure_reason": p.failure_reason,
         "payment_id": p.payment_id,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "created_at": iso(p.created_at) if p.created_at else None,
     }

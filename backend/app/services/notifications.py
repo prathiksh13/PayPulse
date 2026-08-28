@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
 from ..models import Anomaly, RecoveryAction, UpiMandate
-from ..utils.helpers import to_float
+from ..utils.helpers import iso, to_float
 
 
 def build_notifications(db: Session, limit: int = 20) -> list[dict]:
@@ -26,7 +26,7 @@ def build_notifications(db: Session, limit: int = 20) -> list[dict]:
                 ),
                 "severity": a.severity,
                 "read": False,
-                "created_at": a.detected_at.isoformat(),
+                "created_at": iso(a.detected_at),
             }
         )
 
@@ -44,7 +44,7 @@ def build_notifications(db: Session, limit: int = 20) -> list[dict]:
                 "title": "Recovery " + (r.status.replace("_", " ")),
                 "message": f"{r.payment_id} · {r.primary_action} · ~{to_float(r.recovery_probability) or 0}% likely",
                 "read": False,
-                "created_at": r.created_at.isoformat(),
+                "created_at": iso(r.created_at),
             }
         )
 
@@ -63,7 +63,7 @@ def build_notifications(db: Session, limit: int = 20) -> list[dict]:
                 "title": "Mandate failed",
                 "message": f"{m.mandate_id} · {m.failure_reason or 'activation failed'}",
                 "read": False,
-                "created_at": m.created_at.isoformat(),
+                "created_at": iso(m.created_at),
             }
         )
 

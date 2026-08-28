@@ -41,6 +41,14 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None) -> 
         or 0
     )
 
+    # UPI failure rate (live UPI payment rows in the window)
+    upi_succeeded = payments_q.filter(Payment.method == "upi", Payment.status.in_(SUCCESS_STATUSES)).count()
+    upi_failed = payments_q.filter(Payment.method == "upi", Payment.status.in_(FAILED_STATUSES)).count()
+    upi_rate = (upi_failed / (upi_failed + upi_succeeded) * 100) if (upi_failed + upi_succeeded) else None
+
+    # Amount already recovered via successful recovery outcomes
+    recovered = _recovered_amount(db)
+
     # Checkout abandonment (% of sessions that ended abandoned)
     sessions_q = db.query(CheckoutSession).filter(
         CheckoutSession.started_at >= start, CheckoutSession.started_at < end
@@ -60,6 +68,16 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None) -> 
         if (mandate_active + mandate_failed)
         else None
     )
+    mandate_failure_rate = (
+        (mandate_failed / (mandate_active + mandate_failed) * 100)
+        if (mandate_active + mandate_failed)
+        else None
+    )
+
+    risk_amount = to_float(amount_at_risk) or 0
+    recovery_rate = (
+        (recovered / (recovered + risk_amount) * 100) if recovered else None
+    )
 
     return {
         "volume": to_float(volume),
@@ -69,7 +87,24 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None) -> 
         "amount_at_risk": to_float(amount_at_risk),
         "checkout_abandonment": round(checkout_abandonment, 1) if checkout_abandonment is not None else None,
         "mandate_health": round(mandate_health, 1) if mandate_health is not None else None,
+        "mandate_failure_rate": round(mandate_failure_rate, 1) if mandate_failure_rate is not None else None,
+        "upi_failure_rate": round(upi_rate, 1) if upi_rate is not None else None,
+        "recovered_amount": to_float(recovered),
+        "recovery_rate": round(recovery_rate, 1) if recovery_rate is not None else None,
     }
+
+
+def _recovered_amount(db: Session) -> float:
+    """Total amount resolved through successful recovery outcomes."""
+    from ..models import RecoveryAction, RecoveryOutcome
+
+    rows = (
+        db.query(RecoveryOutcome, RecoveryAction.amount)
+        .join(RecoveryAction, RecoveryAction.id == RecoveryOutcome.recovery_action_id)
+        .filter(RecoveryOutcome.result == "success")
+        .all()
+    )
+    return sum(to_float(amount) or 0 for _, amount in rows)
 
 
 @ttl_cache(ttl=20.0)
@@ -344,7 +379,8 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
     ).group_by(func.date(CheckoutSession.started_at), CheckoutSession.status).all()
     per_day: dict[str, dict] = {}
     for day, status, cnt in days:
-        d = per_day.setdefault(day.isoformat() if day else "?", {"started": 0, "abandoned": 0})
+        day_key = day.isoformat() if hasattr(day, "isoformat") else str(day) if day else "?"
+        d = per_day.setdefault(day_key, {"started": 0, "abandoned": 0})
         d["started"] += cnt
         if status == "abandoned":
             d["abandoned"] += cnt

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-SQLITE_DEFAULT = "sqlite:///./pulseops.db"
+SQLITE_DEFAULT = f"sqlite:///{str(BASE_DIR / 'pulseops.db').replace(os.sep, '/')}"
 
 
 def _normalize_db_url(url: str) -> str:
@@ -46,6 +46,13 @@ class Settings:
         self.groq_api_key = os.getenv("GROQ_API_KEY", "")
         self.groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
         self.groq_api_base = os.getenv("GROQ_API_BASE", "https://api.groq.com/openai/v1")
+
+        # Anomaly detection: minimum failed transactions in the window before a
+        # spike is created. Kept small (default 2) so the local test-mode flow
+        # produces a visible spike immediately; override via ANOMALY_MIN_TRANSACTIONS.
+        self.anomaly_min_transactions = max(
+            1, int(os.getenv("ANOMALY_MIN_TRANSACTIONS", "2") or 2)
+        )
 
         # CORS
         raw = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173,http://localhost:3000")

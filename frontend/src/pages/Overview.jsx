@@ -3,7 +3,7 @@ import {
   WalletCards, ArrowUpRight, Store,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { getDashboard, getPayments, getRecoveryActions } from '../api';
+import { getDashboard, getFailureBreakdown, getMethodDistribution, getPaymentTrend, getPayments, getRecoveryActions } from '../api';
 import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import { navigate } from '../hooks/useHashRoute';
@@ -27,11 +27,21 @@ export function Overview() {
   const dash = useApi(() => getDashboard({ from: dateRange.from, to: dateRange.to }), [dateRange]);
   const payments = useApi(() => getPayments({ from: dateRange.from, to: dateRange.to, limit: 8 }), [dateRange]);
   const recovery = useApi(() => getRecoveryActions({ status: 'pending', limit: 6 }), [dateRange]);
+  const series = useApi(() => getPaymentTrend({ from: dateRange.from, to: dateRange.to }), [dateRange]);
+  const failures = useApi(() => getFailureBreakdown({ from: dateRange.from, to: dateRange.to }), [dateRange]);
+  const methods = useApi(() => getMethodDistribution({ from: dateRange.from, to: dateRange.to }), [dateRange]);
 
   const s = dash.data || {};
   const has = dash.data && !dash.loading;
   const txns = payments.data?.items || payments.data?.payments || (Array.isArray(payments.data) ? payments.data : []);
   const opps = recovery.data?.items || recovery.data?.actions || (Array.isArray(recovery.data) ? recovery.data : []);
+  const seriesRows = series.data?.items || series.data?.series || (Array.isArray(series.data) ? series.data : []);
+  const failureRows = failures.data?.items || (Array.isArray(failures.data) ? failures.data : []);
+  const methodRows = methods.data?.items || (Array.isArray(methods.data) ? methods.data : []);
+
+  const seriesByDay = seriesRows.map((p) => ({ ...p, date: p.date || p.period }));
+  const failureBar = failureRows.map((f) => ({ name: f.code || 'unknown', count: f.count, value: f.count }));
+  const methodDonut = methodRows.map((m) => ({ name: m.name, value: m.count }));
 
   const openPayment = (row) => navigate(`/payments?view=${encodeURIComponent(row.id)}`);
 
@@ -78,8 +88,8 @@ export function Overview() {
         {statCard('Failed payments', fmtNum(s.failed), 'in selected window', AlertTriangle)}
         {statCard('Amount at risk', fmtINR(s.amount_at_risk), 'across failed payments', AlertTriangle)}
         {statCard('Checkout drop-off rate', fmtPct(s.checkout_abandonment), 'vs checkout started', Activity)}
-        {statCard('UPI failure rate', 'No data available', 'expect UPI events', WalletCards)}
-        {statCard('Recovery rate', 'No data available', 'expect recovery actions', RefreshCw)}
+        {statCard('UPI failure rate', fmtPct(s.upi_failure_rate), 'of UPI payments', WalletCards)}
+        {statCard('Recovery rate', fmtPct(s.recovery_rate), `${fmtINR(s.recovered_amount)} recovered`, RefreshCw)}
       </section>
 
       <section className="block">
@@ -96,29 +106,58 @@ export function Overview() {
       <section className="chart-grid">
         <TrendChart
           title="Payment success / failure trend"
-          subtitle="Success and failure rate over time (source: /api/payments)"
-          unavailable
+          subtitle="Success and failure rate over time (live data)"
+          data={seriesByDay}
+          xKey="date"
+          series={[
+            { key: 'success', name: 'Success', color: '#10b981' },
+            { key: 'failed', name: 'Failed', color: '#ef4444' },
+          ]}
+          loading={series.loading}
+          unavailable={series.unavailable}
+          networkError={series.networkError}
+          errorText={series.error}
+          onRetry={series.refresh}
         />
         <TrendChart
           title="Payment volume trend"
-          subtitle="Processed volume per interval (source: /api/payments?group=day)"
-          unavailable
+          subtitle="Processed volume per day (live data)"
+          data={seriesByDay}
+          xKey="date"
+          series={[{ key: 'volume', name: 'Volume', color: '#6366f1' }]}
           formatValue={(v) => fmtCompact(v)}
+          loading={series.loading}
+          unavailable={series.unavailable}
+          networkError={series.networkError}
+          errorText={series.error}
+          onRetry={series.refresh}
         />
       </section>
 
       <section className="chart-grid two">
         <BarChartView
           title="Failure reasons"
-          subtitle="Distribution of failure codes (source: /api/payments?status=failed)"
-          unavailable
-          percent
+          subtitle="Distribution of failure codes (live data)"
+          data={failureBar}
+          xKey="name"
+          barKey="count"
           layout="vertical"
+          loading={failures.loading}
+          unavailable={failures.unavailable}
+          networkError={failures.networkError}
+          errorText={failures.error}
+          onRetry={failures.refresh}
         />
         <DonutChart
           title="Payment method distribution"
-          subtitle="Mix of UPI, card and other methods (source: /api/payments)"
-          unavailable
+          subtitle="Mix of UPI, card and other methods (live data)"
+          data={methodDonut}
+          valueKey="value"
+          loading={methods.loading}
+          unavailable={methods.unavailable}
+          networkError={methods.networkError}
+          errorText={methods.error}
+          onRetry={methods.refresh}
         />
       </section>
 

@@ -7,6 +7,7 @@ from .routers import (
     agent,
     analytics,
     anomalies,
+    cache,
     checkout,
     health,
     mandates,
@@ -52,3 +53,4 @@ app.include_router(reports.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
+app.include_router(cache.router, prefix="/api")

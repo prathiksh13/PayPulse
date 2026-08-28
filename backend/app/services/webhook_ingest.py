@@ -12,6 +12,7 @@ from ..models import (
     UpiMandate,
 )
 from ..utils.helpers import now_utc, to_float
+from ..utils.plog import plog
 from .serializers import payment_status_from_rzp
 
 
@@ -19,6 +20,16 @@ class WebhookError(Exception):
     def __init__(self, message: str, status_code: int = 400):
         super().__init__(message)
         self.status_code = status_code
+
+
+def _provider_created_at(entity: dict) -> datetime | None:
+    value = entity.get("created_at")
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
 
 
 def _event_id(payload: dict) -> str:
@@ -52,19 +63,27 @@ def process_webhook(db: Session, payload: dict, raw_body: bytes | None = None) -
     if existing:
         return {"status": "duplicate", "event_id": event_id, "processing": False}
 
+    event_entity = _raw_entity(payload, "payment")
+    event_amount = to_float(event_entity.get("amount")) if event_entity else None
+    if event_amount is not None:
+        event_amount = round(event_amount / 100, 2)
     db.add(PaymentEvent(
         event_id=event_id,
         payment_id=_payload_payment_id(payload) or "unknown",
         event_type=event,
-        status=None,
-        error_code=None,
-        error_reason=None,
+        status=event_entity.get("status") if event_entity else None,
+        amount=event_amount,
+        method=event_entity.get("method") if event_entity else None,
+        error_code=event_entity.get("error_code") if event_entity else None,
+        error_reason=event_entity.get("error_description") if event_entity else None,
         payload=payload,
         received_at=now_utc(),
     ))
 
     if event.startswith("payment."):
         _handle_payment_event(db, event, payload)
+        entity = _raw_entity(payload, "payment")
+        _sync_from_payment(db, entity)
     elif event.startswith("mandate."):
         _handle_mandate_event(db, event, payload)
     elif event.startswith("order."):
@@ -78,6 +97,8 @@ def process_webhook(db: Session, payload: dict, raw_body: bytes | None = None) -
         pass
 
     db.commit()
+    from ..utils.cache import clear_cache
+    clear_cache()
     return {"status": "processed", "event_id": event_id, "event": event, "processing": True}
 
 
@@ -113,8 +134,73 @@ def store_payment_from_api(db: Session, payment_entity: dict, event_type: str = 
         received_at=now,
     ))
     _handle_payment_event(db, event_type, payload)
+    _sync_from_payment(db, payment_entity)
     db.commit()
+    from ..utils.cache import clear_cache
+    clear_cache()
     return True
+
+
+def _sync_from_payment(db: Session, entity: dict):
+    """Derive checkout funnel telemetry + real UPI auto-pay mandates from the
+    actual payment entity (shared by webhooks and the API checkout flow)."""
+    if not entity or not entity.get("id"):
+        return
+    from .checkout_service import record_payment_outcome
+
+    record_payment_outcome(db, entity.get("order_id"), entity)
+    _sync_mandate_from_payment(db, entity)
+
+
+def _sync_mandate_from_payment(db: Session, entity: dict):
+    """Only genuine UPI auto-pay / e-mandate payments (method == 'upi' carrying
+    notes.mandate_id) produce a UpiMandate row. Ordinary card/netbanking/wallet
+    payments never do — this prevents fabricated mandates."""
+    notes = entity.get("notes") or {}
+    rzp_mandate_id = None
+    if isinstance(notes, dict):
+        rzp_mandate_id = (
+            notes.get("mandate_id")
+            or notes.get("rzp_mandate_id")
+            or notes.get("mandate")
+        )
+    method = (entity.get("method") or "").lower()
+    pid = entity.get("id")
+    if not rzp_mandate_id or method != "upi" or not pid:
+        return
+
+    payment_status = payment_status_from_rzp(entity.get("status"))
+    m = db.query(UpiMandate).filter(UpiMandate.mandate_id == rzp_mandate_id).first()
+    if m is None:
+        m = UpiMandate(
+            mandate_id=rzp_mandate_id,
+            rzp_order_id=entity.get("order_id") or entity.get("rzp_order_id"),
+            customer_id=entity.get("customer_id"),
+            customer_name=notes.get("customer_name") or notes.get("name"),
+            customer_email=notes.get("email"),
+            customer_contact=notes.get("contact"),
+            frequency=notes.get("frequency") or "manual",
+            status="active" if payment_status in ("captured", "authorized") else "pending",
+            amount=to_float(entity.get("amount")),
+            raw=entity,
+        )
+        db.add(m)
+        db.flush()
+        db.add(MandateEvent(
+            event_id=f"upi-autopay:{pid}",
+            mandate_id=rzp_mandate_id,
+            event_type="mandate.activated" if m.status == "active" else "mandate.started",
+            status=m.status,
+            error_code=entity.get("error_code"),
+            error_reason=entity.get("error_description"),
+            payload=entity,
+            received_at=now_utc(),
+        ))
+    else:
+        if payment_status in ("captured", "authorized") and m.status != "active":
+            m.status = "active"
+        if entity.get("error_description"):
+            m.failure_reason = entity.get("error_description")
 
 
 def _raw_entity(payload: dict, key: str) -> dict:
@@ -174,8 +260,16 @@ def _handle_payment_event(db: Session, event: str, payload: dict):
             description=description,
             raw=entity,
         )
+        provider_created_at = _provider_created_at(entity)
+        if provider_created_at is not None:
+            payment.created_at = provider_created_at
         db.add(payment)
         db.flush()
+        plog(
+            f"PAYMENT_CREATED event={event} payment_id={pid} status={status} "
+            f"method={method or 'n/a'} order_id={order_id or 'n/a'} amount_inr={amount_inr} "
+            f"error_code={error_code or 'n/a'} error_reason={error_reason or 'n/a'}"
+        )
     else:
         payment.amount = amount_inr if amount_inr is not None else payment.amount
         payment.order_id = order_id or payment.order_id

@@ -4,6 +4,14 @@ import functools
 import threading
 import time
 
+_CACHE_REGISTRY: list = []
+
+
+def clear_cache() -> None:
+    """Drop every process-wide TTL cache entry (all decorated functions)."""
+    for clear in _CACHE_REGISTRY:
+        clear()
+
 
 def ttl_cache(ttl: float = 20.0):
     """Process-wide TTL cache for pure aggregate functions.
@@ -18,6 +26,12 @@ def ttl_cache(ttl: float = 20.0):
 
     lock = threading.Lock()
     store: dict = {}
+
+    def _clear_locked():
+        with lock:
+            store.clear()
+
+    _CACHE_REGISTRY.append(_clear_locked)
 
     def deco(fn):
         @functools.wraps(fn)

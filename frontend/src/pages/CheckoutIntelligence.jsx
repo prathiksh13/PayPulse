@@ -88,24 +88,46 @@ export function CheckoutIntelligence() {
       <section className="chart-grid two">
         <TrendChart
           title="Drop-off trend"
-          subtitle="Checkout drop-off rate over time (source: /api/checkout/analytics?view=trend)"
-          unavailable
+          subtitle="Checkout drop-off rate over time (from live /api/checkout/analytics)"
+          data={dropoffTrend.map((d) => ({ ...d, date: d.date || d.period }))}
+          xKey="date"
+          series={[{ key: 'dropoff_rate', name: 'Drop-off rate', color: '#ef4444' }]}
           formatValue={(v) => `${v}%`}
+          loading={api.loading}
+          unavailable={api.unavailable}
+          networkError={api.networkError}
+          errorText={api.error}
+          onRetry={api.refresh}
         />
         <BarChartView
           title="Drop-off by method"
-          subtitle="Where each payment method loses customers (source: /api/checkout/analytics?view=method)"
-          unavailable
+          subtitle="Where each payment method loses customers (live data)"
+          data={dropoffByMethod.map((d) => ({ ...d, name: d.method || d.name }))}
+          xKey="name"
+          barKey="value"
+          percent
           layout="vertical"
+          loading={api.loading}
+          unavailable={api.unavailable}
+          networkError={api.networkError}
+          errorText={api.error}
+          onRetry={api.refresh}
         />
       </section>
 
       <section className="chart-grid two">
         <BarChartView
           title="Drop-off by device"
-          subtitle="Mobile vs desktop checkout drop-offs (source: /api/checkout/analytics?view=device)"
-          unavailable
+          subtitle="Mobile vs desktop checkout drop-offs (live data)"
+          data={dropoffByDevice.map((d) => ({ ...d, name: d.device || d.name }))}
+          xKey="name"
+          barKey="count"
           layout="vertical"
+          loading={api.loading}
+          unavailable={api.unavailable}
+          networkError={api.networkError}
+          errorText={api.error}
+          onRetry={api.refresh}
         />
         <Panel
           title="Drop-off signal mix"

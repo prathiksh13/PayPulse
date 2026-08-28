@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { RefreshCw, RotateCcw, Ban, Mail, ArrowUpRight, History } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { getRecoveryActions, executeRecoveryAction, getRecoveryHistory } from '../api';
+import { invalidateCache, getRecoveryActions, executeRecoveryAction, getRecoveryHistory } from '../api';
 import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import { Panel } from '../components/ui/Panel';
@@ -31,6 +31,21 @@ const HISTORY_COLUMNS = [
   { key: 'result', label: 'Result', sortable: true, render: (r) => <StatusBadge value={r.result || r.status} meta={{ success: { label: 'Success', tone: 'success' }, failed: { label: 'Failed', tone: 'danger' }, pending: { label: 'Pending', tone: 'warning' } }} /> },
 ];
 
+const ACTIVE_STATUSES = ['failed', 'attempted', 'pending', 'in_progress'];
+
+const canRetry = (r) => {
+  const st = String(r.payment_status || '').toLowerCase();
+  return r.payment_status == null ? true : ACTIVE_STATUSES.includes(st);
+};
+
+const canRefundAction = (r) => {
+  const st = String(r.payment_status || '').toLowerCase();
+  // Refund is only shown for captured/authorized payments; failed-never-captured
+  // payments cannot be refunded and there is no way to allow it via a recovery
+  // row on a captured payment either unless the backend says it is valid.
+  return r.payment_status == null ? true : st === 'captured' || st === 'authorized';
+};
+
 export function RecoveryActions() {
   const { dateRange } = useApp();
   const toast = useToast();
@@ -50,6 +65,7 @@ export function RecoveryActions() {
     setPending(null);
     if (res.ok) {
       toast(`${RECOVERY_ACTION_TYPE[action]?.label || titleCase(action)} executed`, 'success', { description: `${row.id} — backend is processing.` });
+      await invalidateCache().catch(() => {});
       actionsApi.refresh();
       histApi.refresh();
     } else if (res.status === 404) {
@@ -79,8 +95,8 @@ export function RecoveryActions() {
       key: '_actions', label: 'Actions', className: 'actions-col',
       render: (r) => (
         <div className="row-actions">
-          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openAction(r, 'retry'); }}><RefreshCw size={13} /> Retry</Button>
-          <Button size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); openAction(r, 'refund'); }}><RotateCcw size={13} /> Refund</Button>
+          {canRetry(r) && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openAction(r, 'retry'); }}><RefreshCw size={13} /> Retry</Button>}
+          {canRefundAction(r) && <Button size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); openAction(r, 'refund'); }}><RotateCcw size={13} /> Refund</Button>}
           <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openAction(r, 'notify'); }}><Mail size={13} /> Notify</Button>
           <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openAction(r, 'escalate'); }}><ArrowUpRight size={13} /> Escalate</Button>
           <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); openAction(r, 'ignore'); }}><Ban size={13} /> Ignore</Button>

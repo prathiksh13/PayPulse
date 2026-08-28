@@ -11,7 +11,8 @@ from ..models import (
     RecoveryAction,
     RecoveryOutcome,
 )
-from ..utils.helpers import now_utc, to_float
+from ..utils.helpers import iso, now_utc, to_float
+from ..utils.cache import clear_cache
 from .razorpay_client import RazorpayClient, RazorpayError
 from .settings_service import recovery_policy
 from .serializers import recovery_to_dict
@@ -64,11 +65,9 @@ def ensure_candidates(db: Session, limit: int | None = None, amount_at_risk_cap:
     limit = limit or 100
     cap = amount_at_risk_cap if amount_at_risk_cap is not None else policy["max_recovery_amount"]
 
-    open_ids = {
+    known_ids = {
         r.payment_id
-        for r in db.query(RecoveryAction).filter(
-            RecoveryAction.status.in_(("pending", "in_progress"))
-        ).all()
+        for r in db.query(RecoveryAction).all()
     }
 
     failed = (
@@ -84,7 +83,7 @@ def ensure_candidates(db: Session, limit: int | None = None, amount_at_risk_cap:
 
     created = 0
     for p in failed:
-        if p.payment_id in open_ids:
+        if p.payment_id in known_ids:
             continue
         if (to_float(p.amount) or 0) > cap:
             continue
@@ -133,6 +132,20 @@ class RecoveryBlocked(Exception):
         self.status_code = status_code
 
 
+def _can_retry(status: str | None) -> bool:
+    return (status or "").lower() in FAILED_STATUSES
+
+
+def _can_refund(payment) -> tuple[bool, str]:
+    status = (payment.status or "").lower()
+    remaining = to_float(payment.amount) - to_float(payment.refunded_amount)
+    if status not in ("captured", "authorized"):
+        return False, "Refund is only valid for payments that were captured/authorized and settled funds."
+    if remaining <= 0:
+        return False, "Payment is already fully refunded."
+    return True, ""
+
+
 def execute_recovery_action(
     db: Session,
     action_id: int,
@@ -161,15 +174,28 @@ def execute_recovery_action(
 
     # --- safety rules -------------------------------------------------------
     if action == "retry":
+        if not _can_retry(payment.status if payment else None):
+            raise RecoveryBlocked(
+                "Retry is only valid for failed/attempted payments that have not settled funds.",
+                422,
+            )
         if rec.retry_count >= policy["max_retry_attempts"]:
             raise RecoveryBlocked(
                 f"Retry limit reached ({rec.retry_count}/{policy['max_retry_attempts']}).", 409
             )
         _check_cooldown(db, rec)
     elif action == "refund":
-        if amount > policy["max_refund_amount"]:
+        if payment is None:
+            raise RecoveryBlocked("Payment record not found; cannot refund.", 404)
+        can, why = _can_refund(payment)
+        if not can:
+            raise RecoveryBlocked(why, 422)
+        refund_amount = min(amount, to_float(payment.amount) - to_float(payment.refunded_amount))
+        if refund_amount <= 0:
+            raise RecoveryBlocked("Payment has no remaining refundable amount.", 422)
+        if refund_amount > policy["max_refund_amount"]:
             raise RecoveryBlocked(
-                f"Refund blocked by safety policy: amount ₹{amount} exceeds limit ₹{policy['max_refund_amount']}.",
+                f"Refund blocked by safety policy: amount ₹{refund_amount} exceeds limit ₹{policy['max_refund_amount']}.",
                 409,
             )
         if RISK_ORDER.get(risk, 0) >= RISK_ORDER["high"]:
@@ -178,6 +204,7 @@ def execute_recovery_action(
                 403,
             )
         _check_cooldown(db, rec)
+        amount = refund_amount
 
     if RISK_ORDER.get(risk, 0) >= RISK_ORDER["critical"]:
         raise RecoveryBlocked("Action blocked: critical risk requires manual ops review.", 403)
@@ -233,19 +260,17 @@ def execute_recovery_action(
                 result, detail = "failed", str(exc)
     elif action == "refund":
         rec.status = "in_progress"
-        if payment is None:
-            result, detail = "failed", "payment record not found in DB"
-        else:
-            try:
-                client = RazorpayClient()
-                refund = client.refund_payment(payment.payment_id, amount)
-                provider_ref_id = refund.get("provider_ref_id")
-                payment.is_refunded = True
-                payment.refunded_amount = amount
-                payment.status = "refunded"
-                result, detail = "success", f"refund {provider_ref_id or ''} initiated"
-            except RazorpayError as exc:
-                result, detail = "failed", str(exc)
+        try:
+            client = RazorpayClient()
+            refund = client.refund_payment(payment.payment_id, amount)
+            provider_ref_id = refund.get("provider_ref_id")
+            payment.refunded_amount = to_float(payment.refunded_amount) + amount
+            remaining = to_float(payment.amount) - payment.refunded_amount
+            payment.is_refunded = remaining <= 0
+            payment.status = "refunded" if remaining <= 0 else "partially_refunded"
+            result, detail = "success", f"refund {provider_ref_id or ''} initiated"
+        except RazorpayError as exc:
+            result, detail = "failed", str(exc)
     elif action == "notify":
         result, detail = "success", "customer notification queued (email channel)"
     elif action == "escalate":
@@ -257,6 +282,10 @@ def execute_recovery_action(
         rec.status = "ignored"
     elif result == "success":
         rec.status = "executed"
+    elif rec.status == "in_progress" and result == "failed":
+        # Execution failed (provider/network) — restore to pending so the
+        # action stays actionable after cooldown instead of being stuck.
+        rec.status = "pending"
 
     db.add(RecoveryOutcome(
         recovery_action_id=rec.id,
@@ -286,6 +315,7 @@ def execute_recovery_action(
     ))
 
     db.commit()
+    clear_cache()
     return rec
 
 
@@ -336,8 +366,8 @@ def recovery_history(db: Session, from_date: str | None, to_date: str | None, li
             "status": o.result,
             "detail": o.detail,
             "provider_ref_id": o.provider_ref_id,
-            "created_at": o.created_at.isoformat(),
-            "createdAt": o.created_at.isoformat(),
+            "created_at": iso(o.created_at),
+            "createdAt": iso(o.created_at),
         }
         for o in q
     ]
