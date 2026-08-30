@@ -22,6 +22,7 @@ def health(db: Session = Depends(get_db)):
         "service": "payment-operations-agent",
         "version": settings.app_version,
         "database": db_status,
+        "database_dialect": db.bind.dialect.name if db.bind is not None else "unknown",
         "razorpay_configured": settings.razorpay_configured,
         "groq_configured": settings.groq_configured,
         "timestamp": datetime.now(timezone.utc).isoformat(),

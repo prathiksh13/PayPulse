@@ -1,10 +1,12 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case, func
+from sqlalchemy import Date, case, cast, func
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..models import (
     CheckoutEvent,
     CheckoutSession,
@@ -171,11 +173,22 @@ def method_distribution(db: Session, from_date: str | None, to_date: str | None)
 
 
 @ttl_cache(ttl=20.0)
+def date_bucket(db: Session, column, group: str = "day"):
+    """Portable date grouping.
+
+    SQLite supports func.date()/func.strftime(); PostgreSQL has neither but can
+    CAST to DATE / use to_char(). Branching on the connected dialect keeps the
+    same query working against the local SQLite dev DB and Supabase Postgres."""
+    if settings.is_postgres:
+        return cast(column, Date) if group == "day" else func.to_char(column, "YYYY-MM")
+    return func.date(column) if group == "day" else func.strftime("%Y-%m", column)
+
+
 def payment_series(
     db: Session, from_date: str | None, to_date: str | None, group: str = "day"
 ) -> list[dict]:
     start, end = resolve_range(from_date, to_date)
-    bucket = func.date(Payment.created_at) if group == "day" else func.strftime("%Y-%m", Payment.created_at)
+    bucket = date_bucket(db, Payment.created_at, group)
     q = (
         db.query(
             bucket.label("period"),
@@ -374,9 +387,10 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
     dropoff_by_device.sort(key=lambda x: x["count"], reverse=True)
 
     # drop-off trend (per day)
-    days = db.query(func.date(CheckoutSession.started_at), CheckoutSession.status, func.count(CheckoutSession.id)).filter(
+    day_bucket = date_bucket(db, CheckoutSession.started_at, "day")
+    days = db.query(day_bucket, CheckoutSession.status, func.count(CheckoutSession.id)).filter(
         CheckoutSession.started_at >= start, CheckoutSession.started_at < end
-    ).group_by(func.date(CheckoutSession.started_at), CheckoutSession.status).all()
+    ).group_by(day_bucket, CheckoutSession.status).all()
     per_day: dict[str, dict] = {}
     for day, status, cnt in days:
         day_key = day.isoformat() if hasattr(day, "isoformat") else str(day) if day else "?"

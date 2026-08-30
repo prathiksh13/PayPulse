@@ -1,4 +1,5 @@
-﻿from __future__ import annotations
+# -*- coding: utf-8 -*-
+from __future__ import annotations
 
 from sqlalchemy.orm import Session
 

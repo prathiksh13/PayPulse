@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -294,13 +294,16 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
         )
 
     detection_day = now_utc().date().isoformat()
+    day_start = datetime.combine(now_utc().date(), time.min, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
     stored: list[dict] = []
     for cand in candidates:
         existing = (
             db.query(Anomaly)
             .filter(
                 Anomaly.anomaly_type == cand["type"],
-                func.substr(Anomaly.detected_at, 1, 10) == detection_day,
+                Anomaly.detected_at >= day_start,
+                Anomaly.detected_at < day_end,
                 Anomaly.status == "active",
             )
             .first()
@@ -345,7 +348,7 @@ def detect_and_store(db: Session, from_date: str | None = None, to_date: str | N
             DELETE FROM anomalies
             WHERE id NOT IN (
                 SELECT MIN(id) FROM anomalies
-                GROUP BY anomaly_type, substr(detected_at, 1, 10), status
+                GROUP BY anomaly_type, CAST(detected_at AS DATE), status
             )
             """
         )
