@@ -1,14 +1,14 @@
 import { useRef, useState, useEffect } from 'react';
 import { Send, Bot, User, Sparkles } from 'lucide-react';
-import { askAgent } from '../../api';
+import { analyzeAgent } from '../../api';
 import { useToast } from '../../context/ToastContext';
 
 const QUICK_QUESTIONS = [
-  'Why did payments fail today?',
-  'Which payment method is causing the most failures?',
-  'How much revenue is at risk?',
-  'What should we retry?',
-  'What caused the checkout drop-off?',
+  "Analyze today's payments",
+  'Why are payments failing?',
+  'Analyze checkout drop-offs',
+  'Analyze UPI mandate failures',
+  'What needs attention?',
 ];
 
 function AgentMessage({ role, children, toolCalls }) {
@@ -37,6 +37,38 @@ function AgentMessage({ role, children, toolCalls }) {
   );
 }
 
+function AnalysisMessage({ analysis }) {
+  return (
+    <div className="chat-msg msg-agent">
+      <div className="chat-avatar"><Bot size={13} /></div>
+      <div className="chat-bubble">
+        <p>{analysis.summary}</p>
+        {analysis.priority ? <span className="chip">Priority: {analysis.priority}</span> : null}
+        {analysis.findings?.length > 0 ? (
+          <div className="chat-analysis-section">
+            <strong>Findings</strong>
+            {analysis.findings.map((finding, i) => <p key={i}>{finding}</p>)}
+          </div>
+        ) : null}
+        {analysis.recommendations?.length > 0 ? (
+          <div className="chat-analysis-section">
+            <strong>Recommended actions</strong>
+            {analysis.recommendations.map((recommendation, i) => <p key={i}>{recommendation}</p>)}
+          </div>
+        ) : null}
+        {analysis.supporting_data?.length > 0 ? (
+          <div className="chat-analysis-section">
+            <strong>Supporting data</strong>
+            {analysis.supporting_data.map((item, i) => (
+              <p key={i} className="muted">{item.payment_id || item.mandate_id || item.id || JSON.stringify(item)}</p>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function AgentChat({ dateRange }) {
   const toast = useToast();
   const [messages, setMessages] = useState([]);
@@ -56,34 +88,17 @@ export function AgentChat({ dateRange }) {
     setAsked(true);
     setMessages((m) => [...m, { role: 'user', text: question }]);
     setThinking(true);
-    const res = await askAgent({ question, from: dateRange.from, to: dateRange.to });
+    const res = await analyzeAgent({ question, from: dateRange.from, to: dateRange.to });
     setThinking(false);
 
     if (res.ok) {
-      const d = res.data || {};
-      const answer =
-        d.answer ||
-        (d.message && d.message.content) ||
-        'The agent processed your question. Connect a richer LLM/tool-calling backend to /api/agent/ask for deeper answers.';
-      setMessages((m) => [...m, { role: 'agent', text: answer, toolCalls: d.tool_calls || d.toolCalls }]);
-      return;
-    }
-
-    if (res.status === 404) {
-      setMessages((m) => [
-        ...m,
-        {
-          role: 'agent',
-          text:
-            "The AI agent API isn't connected yet. Wire `POST /api/agent/ask` on the backend to your LLM/tool-calling layer and this chat will run live investigations, retrieve payment context, and recommend actions.",
-        },
-      ]);
+      setMessages((m) => [...m, { role: 'agent', analysis: res.data || {} }]);
       return;
     }
     toast('Agent request failed', 'error', { description: res.error });
     setMessages((m) => [
       ...m,
-      { role: 'agent', text: `The agent backend could not be reached (${res.error || 'network error'}). Please start the backend and try again.` },
+      { role: 'agent', text: `The live analysis request failed: ${res.error || 'network error'}.` },
     ]);
   };
 
@@ -115,9 +130,9 @@ export function AgentChat({ dateRange }) {
           </div>
         ) : (
           messages.map((m, i) => (
-            <AgentMessage key={i} role={m.role} toolCalls={m.toolCalls}>
-              {m.text}
-            </AgentMessage>
+            m.analysis
+              ? <AnalysisMessage key={i} analysis={m.analysis} />
+              : <AgentMessage key={i} role={m.role} toolCalls={m.toolCalls}>{m.text}</AgentMessage>
           ))
         )}
         {thinking ? (

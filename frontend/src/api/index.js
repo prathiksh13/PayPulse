@@ -52,6 +52,18 @@ export const getMandate = (id) =>
 export const getCheckoutAnalytics = (range = {}) =>
   request(`/checkout/analytics${qs(range)}`);
 
+export const getCheckoutIntelligenceSummary = (range = {}) =>
+  request(`/checkout-intelligence/summary${qs(range)}`);
+
+export const getCheckoutIntelligenceTrend = (range = {}) =>
+  request(`/checkout-intelligence/trend${qs(range)}`);
+
+export const getCheckoutIntelligenceDropoffReasons = (range = {}) =>
+  request(`/checkout-intelligence/dropoff-reasons${qs(range)}`);
+
+export const getRecentCheckouts = (range = {}) =>
+  request(`/checkout-intelligence/recent${qs(range)}`);
+
 // ---------- Test Mode checkout (Razorpay Checkout SDK) ----------
 export const createTestPayOrder = (payload) =>
   request('/checkout/order', { method: 'POST', body: JSON.stringify(payload) });
@@ -82,6 +94,12 @@ export const executeRecoveryAction = (id, action) =>
     body: JSON.stringify({ action }),
   });
 
+export const updateRecoveryActionStatus = (id, status) =>
+  request(`/recovery/actions/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+
 export const getRecoveryHistory = (range = {}) =>
   request(`/recovery/actions/history${qs(range)}`);
 
@@ -99,6 +117,9 @@ export const getAgentStatus = () => request('/agent/status');
 export const getAgentInvestigations = () => request('/agent/investigations');
 export const askAgent = (payload) =>
   request('/agent/ask', { method: 'POST', body: JSON.stringify(payload) });
+
+export const analyzeAgent = (payload) =>
+  request('/ai-agent/analyze', { method: 'POST', body: JSON.stringify(payload) });
 
 // ---------- Notifications ----------
 export const getNotifications = () => request('/notifications');

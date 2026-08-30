@@ -1,194 +1,112 @@
-import {
-  Timer, RotateCcw, Layers, KeyRound, CheckCircle2, Repeat, RefreshCw,
-  Activity, Monitor,
-} from 'lucide-react';
+import { useMemo } from 'react';
+import { CheckCircle2, Clock3, Percent, RefreshCw, ShoppingCart, XCircle } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { getCheckoutAnalytics } from '../api';
+import {
+  getCheckoutIntelligenceDropoffReasons,
+  getCheckoutIntelligenceSummary,
+  getCheckoutIntelligenceTrend,
+  getRecentCheckouts,
+} from '../api';
 import { useApp } from '../context/AppContext';
-import { useToast } from '../context/ToastContext';
 import { Panel } from '../components/ui/Panel';
-import { WaitingState } from '../components/ui/EmptyState';
-import { ErrorState } from '../components/ui/ErrorState';
+import { StatCard } from '../components/ui/StatCard';
+import { DataTable } from '../components/ui/DataTable';
 import { Button } from '../components/ui/Button';
-import { ChartCard } from '../components/charts/ChartCard';
-import { FunnelChart } from '../components/charts/FunnelChart';
-import { TrendChart } from '../components/charts/TrendChart';
+import { ErrorState } from '../components/ui/ErrorState';
 import { BarChartView } from '../components/charts/BarChartView';
-import { CHECKOUT_STAGES } from '../types';
-import { fmtNum, fmtCompact } from '../utils/format';
-
-function SignalCard({ icon: Icon, label, value, loading }) {
-  return (
-    <div className="signal-card">
-      <span className="icon-box">
-        <Icon size={16} />
-      </span>
-      <div>
-        <span className="signal-label">{label}</span>
-        <strong>{loading ? '…' : value}</strong>
-      </div>
-    </div>
-  );
-}
+import { TrendChart } from '../components/charts/TrendChart';
+import { fmtINR, fmtPct, fmtDateTime } from '../utils/format';
 
 export function CheckoutIntelligence() {
   const { dateRange } = useApp();
-  const toast = useToast();
+  const range = { from: dateRange.from, to: dateRange.to };
+  const summary = useApi(() => getCheckoutIntelligenceSummary(range), [dateRange]);
+  const trend = useApi(() => getCheckoutIntelligenceTrend(range), [dateRange]);
+  const reasons = useApi(() => getCheckoutIntelligenceDropoffReasons(range), [dateRange]);
+  const recent = useApi(() => getRecentCheckouts(range), [dateRange]);
+  const refresh = () => { summary.refresh(); trend.refresh(); reasons.refresh(); recent.refresh(); };
+  const stats = summary.data || {};
+  const trendRows = trend.data?.items || [];
+  const reasonRows = reasons.data?.items || [];
+  const recentRows = recent.data?.items || [];
+  const hasError = summary.networkError || trend.networkError || reasons.networkError || recent.networkError;
 
-  const api = useApi(() => getCheckoutAnalytics({ from: dateRange.from, to: dateRange.to }), [dateRange]);
-  const has = !!api.data && !api.loading;
+  const reasonChart = useMemo(
+    () => reasonRows.map((row) => ({ name: row.reason, count: row.count, value: row.count })),
+    [reasonRows],
+  );
 
-  const funnel = api.data?.funnel || null;
-  const signals = api.data?.signals || null;
-  const dropoffByMethod = api.data?.dropoff_by_method || [];
-  const dropoffByDevice = api.data?.dropoff_by_device || [];
-  const dropoffTrend = api.data?.dropoff_trend || [];
-  const investigation = api.data?.investigation || null;
-
-  const funnelData = funnel ? funnel.map((f) => ({
-    key: f.stage || f.key,
-    label: CHECKOUT_STAGES[f.stage_index] || f.label || f.stage,
-    value: f.value,
-    count: f.count,
-  })) : [];
+  const stat = (label, value, Icon) => (
+    <StatCard label={label} value={summary.loading ? undefined : value} icon={Icon} sub="from persisted checkout sessions" />
+  );
 
   return (
     <div className="page">
-      <div className="chart-grid reversed">
-        <ChartCard
-          title="Checkout conversion funnel"
-          subtitle="Conversion rate at every stage of checkout"
-          loading={api.loading}
-          unavailable={api.unavailable}
-          networkError={api.networkError}
-          errorText={api.error}
-          onRetry={api.refresh}
-          hasData={funnelData.length > 0}
-          height={340}
-        >
-          <FunnelChart data={funnelData} />
-        </ChartCard>
-
-        <Panel title="Behavioral signals" subtitle="What customers were doing during checkout">
-          {!has ? (
-            <WaitingState title={api.unavailable ? 'Waiting for checkout events' : 'No signals yet'} description={`Behavioral signals come from /api/checkout/analytics (session telemetry for ${dateRange.label}).`} />
-          ) : (
-            <div className="signal-grid">
-              <SignalCard icon={Timer} label="Time on checkout" value={signals?.avg_time_on_checkout != null ? `${Math.round(signals.avg_time_on_checkout / 60)}m avg` : '—'} loading={api.loading} />
-              <SignalCard icon={RotateCcw} label="Page reloads" value={signals?.page_reloads != null ? `${fmtNum(signals.page_reloads)} total` : '—'} loading={api.loading} />
-              <SignalCard icon={Layers} label="Payment methods attempted" value={signals?.methods_attempted != null ? fmtNum(signals.methods_attempted) : '—'} loading={api.loading} />
-              <SignalCard icon={KeyRound} label="OTP attempts" value={signals?.otp_attempts != null ? fmtNum(signals.otp_attempts) : '—'} loading={api.loading} />
-              <SignalCard icon={CheckCircle2} label="OTP completion" value={signals?.otp_completion != null ? `${fmtNum(signals.otp_completion)} completed` : '—'} loading={api.loading} />
-              <SignalCard icon={Repeat} label="Payment retries" value={signals?.payment_retries != null ? `${fmtNum(signals.payment_retries)} retries` : '—'} loading={api.loading} />
-            </div>
-          )}
-        </Panel>
-      </div>
+      {hasError ? <ErrorState error={summary.error || trend.error || reasons.error || recent.error} onRetry={refresh} /> : null}
+      <section className="stats-grid">
+        {stat('Checkout attempts', stats.total_checkout_attempts ?? '—', ShoppingCart)}
+        {stat('Completed checkouts', stats.completed_checkouts ?? '—', CheckCircle2)}
+        {stat('Drop-offs', stats.dropped_off_checkouts ?? '—', Clock3)}
+        {stat('Conversion rate', stats.conversion_rate != null ? fmtPct(stats.conversion_rate) : '—', Percent)}
+        {stat('Failed checkouts', stats.failed_checkouts ?? '—', XCircle)}
+      </section>
 
       <section className="chart-grid two">
         <TrendChart
-          title="Drop-off trend"
-          subtitle="Checkout drop-off rate over time (from live /api/checkout/analytics)"
-          data={dropoffTrend.map((d) => ({ ...d, date: d.date || d.period }))}
+          title="Checkout Conversion Trend"
+          subtitle="Attempts, completions and drop-offs from persisted sessions"
+          data={trendRows}
           xKey="date"
-          series={[{ key: 'dropoff_rate', name: 'Drop-off rate', color: '#ef4444' }]}
-          formatValue={(v) => `${v}%`}
-          loading={api.loading}
-          unavailable={api.unavailable}
-          networkError={api.networkError}
-          errorText={api.error}
-          onRetry={api.refresh}
+          series={[
+            { key: 'attempts', name: 'Attempts', color: '#6366f1' },
+            { key: 'completed', name: 'Completed', color: '#10b981' },
+            { key: 'dropped_off', name: 'Dropped off', color: '#f59e0b' },
+          ]}
+          loading={trend.loading}
+          unavailable={trend.unavailable}
+          networkError={trend.networkError}
+          errorText={trend.error}
+          onRetry={trend.refresh}
         />
         <BarChartView
-          title="Drop-off by method"
-          subtitle="Where each payment method loses customers (live data)"
-          data={dropoffByMethod.map((d) => ({ ...d, name: d.method || d.name }))}
-          xKey="name"
-          barKey="value"
-          percent
-          layout="vertical"
-          loading={api.loading}
-          unavailable={api.unavailable}
-          networkError={api.networkError}
-          errorText={api.error}
-          onRetry={api.refresh}
-        />
-      </section>
-
-      <section className="chart-grid two">
-        <BarChartView
-          title="Drop-off by device"
-          subtitle="Mobile vs desktop checkout drop-offs (live data)"
-          data={dropoffByDevice.map((d) => ({ ...d, name: d.device || d.name }))}
+          title="Drop-off Reasons"
+          subtitle="Actual failure and drop-off reasons from checkout events"
+          data={reasonChart}
           xKey="name"
           barKey="count"
           layout="vertical"
-          loading={api.loading}
-          unavailable={api.unavailable}
-          networkError={api.networkError}
-          errorText={api.error}
-          onRetry={api.refresh}
+          loading={reasons.loading}
+          unavailable={reasons.unavailable}
+          networkError={reasons.networkError}
+          errorText={reasons.error}
+          onRetry={reasons.refresh}
         />
-        <Panel
-          title="Drop-off signal mix"
-          subtitle="Events that precede abandonment"
-          actions={<Monitor size={15} className="muted-icon" />}
-        >
-          {!has ? (
-            <WaitingState description="Signal mix is derived from checkout session events once the analytics API streams data." />
-          ) : (
-            <div className="dropoff-by">
-              {dropoffByDevice.length > 0 ? dropoffByDevice.map((d, i) => (
-                <div className="bar-legend-row" key={i}>
-                  <span className="chip">{d.device || d.name || 'device'}</span>
-                  <div className="bar-track"><div className="bar-fill" style={{ width: `${Math.min(d.value, 100)}%`, background: i % 2 ? '#8b5cf6' : '#6366f1' }} /></div>
-                  <strong>{fmtCompact(d.value)}</strong>
-                </div>
-              )) : <WaitingState title="No device data" description="Device-level drop-offs will appear once checkout telemetry is connected." />}
-            </div>
-          )}
-        </Panel>
       </section>
 
       <Panel
-        title="Drop-off investigation"
-        subtitle="AI root-cause analysis of abandoned checkouts"
-        actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              if (api.unavailable || api.networkError) {
-                toast('Investigation needs checkout events', 'info', {
-                  description: 'The AI investigation runs once /api/checkout/analytics streams session telemetry.',
-                });
-              } else {
-                api.refresh();
-                toast('Investigation refreshed', 'success');
-              }
-            }}
-          >
-            <RefreshCw size={13} /> Run investigation
-          </Button>
-        }
+        title="Recent Checkouts"
+        subtitle={`${recentRows.length} persisted sessions · ${dateRange.label}`}
+        actions={<Button variant="outline" size="sm" onClick={refresh}><RefreshCw size={13} /> Refresh</Button>}
+        pad={false}
       >
-        {api.loading ? (
-          <WaitingState title="Investigating…" />
-        ) : api.unavailable ? (
-          <WaitingState
-            title="Waiting for checkout events"
-            description="The AI investigation needs session telemetry. Enable checkout tracking and wire /api/checkout/analytics to analyze drop-offs like this: customer spent 5 minutes on checkout, reloaded 3 times, tried 2 payment methods, OTP was started but never completed."
-          />
-        ) : investigation ? (
-          <div className="investigation-grid">
-            <div className="detail-row"><span className="detail-label">Session behavior</span><span className="detail-value">{investigation.signal_summary || '—'}</span></div>
-            <div className="detail-row"><span className="detail-label">Likely cause</span><span className="detail-value">{investigation.likely_cause || '—'}</span></div>
-            <div className="detail-row"><span className="detail-label">AI confidence</span><span className="detail-value">{investigation.confidence != null ? `${investigation.confidence}%` : '—'}</span></div>
-            <div className="detail-row"><span className="detail-label">Recommended intervention</span><span className="detail-value">{investigation.recommended_intervention || '—'}</span></div>
-          </div>
-        ) : (
-          <WaitingState title="No drop-off to investigate" description="The agent found no abandoned checkout sessions worth investigating in this window." />
-        )}
+        <DataTable
+          loading={recent.loading}
+          waiting={recent.unavailable}
+          onRowClick={() => {}}
+          minWidth={850}
+          emptyTitle="No checkout sessions in this window"
+          emptyDescription="Checkout records appear here after persisted checkout lifecycle events are received."
+          defaultSort={{ key: 'created_at', dir: 'desc' }}
+          columns={[
+            { key: 'checkout_id', label: 'Checkout ID', sortable: true, className: 'mono', render: (r) => r.checkout_id || '—' },
+            { key: 'customer', label: 'Customer', sortable: true, render: (r) => r.customer?.name || r.customer_name || '—' },
+            { key: 'amount', label: 'Amount', sortable: true, align: 'right', render: (r) => r.amount != null ? fmtINR(r.amount) : '—' },
+            { key: 'checkout_status', label: 'Status', sortable: true, render: (r) => r.checkout_status || '—' },
+            { key: 'failure_reason', label: 'Failure / drop-off reason', sortable: true, render: (r) => r.failure_reason || '—' },
+            { key: 'created_at', label: 'Created At', sortable: true, render: (r) => fmtDateTime(r.created_at) },
+          ]}
+          rows={recentRows}
+        />
       </Panel>
     </div>
   );

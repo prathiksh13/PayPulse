@@ -1,174 +1,82 @@
-import { useState } from 'react';
-import { RefreshCw, RotateCcw, Ban, Mail, ArrowUpRight, History } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { RefreshCw, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { invalidateCache, getRecoveryActions, executeRecoveryAction, getRecoveryHistory } from '../api';
+import { getRecoveryActions, updateRecoveryActionStatus } from '../api';
 import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import { Panel } from '../components/ui/Panel';
+import { StatCard } from '../components/ui/StatCard';
 import { DataTable } from '../components/ui/DataTable';
 import { Button } from '../components/ui/Button';
 import { ErrorState } from '../components/ui/ErrorState';
 import { WaitingState } from '../components/ui/EmptyState';
+import { Select, Field } from '../components/ui/Field';
 import { StatusBadge } from '../components/ui/StatusBadge';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
-import { RECOVERY_STATUS, RECOVERY_ACTION_TYPE } from '../types';
-import { fmtINR, fmtPct, fmtDateTime, titleCase } from '../utils/format';
-
-const ACTION_TONE = {
-  retry: { label: 'Retry', btn: 'outline' },
-  refund: { label: 'Refund', btn: 'danger' },
-  notify: { label: 'Notify', btn: 'outline' },
-  escalate: { label: 'Escalate', btn: 'outline' },
-  ignore: { label: 'Ignore', btn: 'ghost' },
-};
-
-const DANGEROUS_ACTIONS = ['refund', 'ignore'];
-const HISTORY_COLUMNS = [
-  { key: 'action', label: 'Action', sortable: true, render: (r) => titleCase(r.action) },
-  { key: 'payment_id', label: 'Payment', sortable: true, className: 'mono', render: (r) => r.payment_id || r.payment },
-  { key: 'executed_by', label: 'Executed by', sortable: true, render: (r) => r.executed_by || r.by || 'AI Agent' },
-  { key: 'created_at', label: 'Time', sortable: true, render: (r) => <span className="muted">{fmtDateTime(r.created_at || r.createdAt)}</span> },
-  { key: 'result', label: 'Result', sortable: true, render: (r) => <StatusBadge value={r.result || r.status} meta={{ success: { label: 'Success', tone: 'success' }, failed: { label: 'Failed', tone: 'danger' }, pending: { label: 'Pending', tone: 'warning' } }} /> },
-];
-
-const ACTIVE_STATUSES = ['failed', 'attempted', 'pending', 'in_progress'];
-
-const canRetry = (r) => {
-  const st = String(r.payment_status || '').toLowerCase();
-  return r.payment_status == null ? true : ACTIVE_STATUSES.includes(st);
-};
-
-const canRefundAction = (r) => {
-  const st = String(r.payment_status || '').toLowerCase();
-  // Refund is only shown for captured/authorized payments; failed-never-captured
-  // payments cannot be refunded and there is no way to allow it via a recovery
-  // row on a captured payment either unless the backend says it is valid.
-  return r.payment_status == null ? true : st === 'captured' || st === 'authorized';
-};
+import { RECOVERY_STATUS } from '../types';
+import { fmtINR, fmtDateTime } from '../utils/format';
 
 export function RecoveryActions() {
   const { dateRange } = useApp();
   const toast = useToast();
-
+  const [priorityFilter, setPriorityFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const actionsApi = useApi(() => getRecoveryActions({ from: dateRange.from, to: dateRange.to }), [dateRange]);
-  const histApi = useApi(() => getRecoveryHistory({ from: dateRange.from, to: dateRange.to }), [dateRange]);
+  const rows = actionsApi.data?.items || actionsApi.data?.actions || [];
+  const filteredRows = useMemo(() => rows.filter((row) =>
+    (!priorityFilter || row.risk === priorityFilter) && (!statusFilter || row.status === statusFilter)
+  ), [rows, priorityFilter, statusFilter]);
+  const counts = useMemo(() => ({
+    total: rows.length,
+    high: rows.filter((r) => r.risk === 'high' || r.risk === 'critical').length,
+    medium: rows.filter((r) => r.risk === 'medium').length,
+    pending: rows.filter((r) => ['recommended', 'pending', 'in_progress'].includes(r.status)).length,
+    completed: rows.filter((r) => r.status === 'completed' || r.status === 'executed').length,
+  }), [rows]);
 
-  const rows = actionsApi.data?.items || actionsApi.data?.actions || (Array.isArray(actionsApi.data) ? actionsApi.data : []);
-  const history = histApi.data?.items || histApi.data?.history || (Array.isArray(histApi.data) ? histApi.data : []);
-
-  const [pending, setPending] = useState(null); // {row, action}
-
-  const runAction = async () => {
-    if (!pending) return;
-    const { row, action } = pending;
-    const res = await executeRecoveryAction(row.id, action);
-    setPending(null);
-    if (res.ok) {
-      toast(`${RECOVERY_ACTION_TYPE[action]?.label || titleCase(action)} executed`, 'success', { description: `${row.id} — backend is processing.` });
-      await invalidateCache().catch(() => {});
-      actionsApi.refresh();
-      histApi.refresh();
-    } else if (res.status === 404) {
-      toast('Recovery endpoint pending', 'error', {
-        description: `POST /api/recovery/actions/${row.id}/execute is not implemented yet. Wire it to actually ${action} this payment.`,
-      });
-    } else {
-      toast('Action failed', 'error', { description: res.error });
+  const setStatus = async (row, status) => {
+    const response = await updateRecoveryActionStatus(row.id, status);
+    if (!response.ok) {
+      toast('Status update failed', 'error', { description: response.error });
+      return;
     }
-  };
-
-  const openAction = (row, action) => {
-    const meta = ACTION_TONE[action];
-    setPending({ row, action, meta });
+    toast('Recovery status updated', 'success', { description: `${row.id} is now ${status}.` });
+    actionsApi.refresh();
   };
 
   const columns = [
-    { key: 'payment', label: 'Payment', sortable: true, className: 'mono', render: (r) => r.payment_id || r.payment || r.id || '—' },
     { key: 'customer', label: 'Customer', sortable: true, render: (r) => r.customer?.name || r.customer_name || '—' },
-    { key: 'failure_reason', label: 'Failure reason', sortable: true, render: (r) => r.failure_reason || r.failureReason || '—' },
-    { key: 'recommended_action', label: 'Recommended action', sortable: true, render: (r) => r.recommended_action || r.action || '—' },
-    { key: 'recovery_probability', label: 'Recovery probability', sortable: true, sortValue: (r) => Number(r.recovery_probability ?? r.probability ?? r.confidence ?? 0), align: 'right', render: (r) => fmtPct(r.recovery_probability ?? r.probability ?? r.confidence) },
-    { key: 'amount', label: 'Amount', sortable: true, align: 'right', className: 'amount', sortValue: (r) => Number(r.amount || 0), render: (r) => (r.amount != null ? fmtINR(r.amount) : '—') },
-    { key: 'risk', label: 'Risk', sortable: true, render: (r) => (r.risk ? <StatusBadge value={r.risk} meta={{ low: { label: 'Low', tone: 'success' }, medium: { label: 'Medium', tone: 'warning' }, high: { label: 'High', tone: 'danger' }, critical: { label: 'Critical', tone: 'danger' } }} /> : '—') },
-    { key: 'status', label: 'Status', sortable: true, render: (r) => <StatusBadge value={r.status} meta={RECOVERY_STATUS} /> },
-    {
-      key: '_actions', label: 'Actions', className: 'actions-col',
-      render: (r) => (
-        <div className="row-actions">
-          {canRetry(r) && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openAction(r, 'retry'); }}><RefreshCw size={13} /> Retry</Button>}
-          {canRefundAction(r) && <Button size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); openAction(r, 'refund'); }}><RotateCcw size={13} /> Refund</Button>}
-          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openAction(r, 'notify'); }}><Mail size={13} /> Notify</Button>
-          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openAction(r, 'escalate'); }}><ArrowUpRight size={13} /> Escalate</Button>
-          <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); openAction(r, 'ignore'); }}><Ban size={13} /> Ignore</Button>
-        </div>
-      ),
-    },
+    { key: 'source', label: 'Payment / Checkout', sortable: true, className: 'mono', render: (r) => r.checkout_id || r.payment_id || '—' },
+    { key: 'amount', label: 'Amount', sortable: true, align: 'right', className: 'amount', render: (r) => r.amount != null ? fmtINR(r.amount) : '—' },
+    { key: 'issue', label: 'Problem', sortable: true, render: (r) => r.issue || r.reason || '—' },
+    { key: 'failure_reason', label: 'Failure reason', sortable: true, render: (r) => r.failure_reason || '—' },
+    { key: 'recommended_action', label: 'Recommended action', sortable: true, render: (r) => r.recommended_action || 'Needs investigation' },
+    { key: 'risk', label: 'Priority', sortable: true, render: (r) => <StatusBadge value={r.risk} meta={{ low: { label: 'Low', tone: 'info' }, medium: { label: 'Medium', tone: 'warning' }, high: { label: 'High', tone: 'danger' }, critical: { label: 'Critical', tone: 'danger' } }} /> },
+    { key: 'status', label: 'Status', sortable: true, render: (r) => <StatusBadge value={r.status} meta={{ ...RECOVERY_STATUS, recommended: { label: 'Recommended', tone: 'info' }, completed: { label: 'Completed', tone: 'success' }, dismissed: { label: 'Dismissed', tone: 'muted' } }} /> },
+    { key: 'created_at', label: 'Created', sortable: true, render: (r) => fmtDateTime(r.created_at || r.createdAt) },
+    { key: '_actions', label: 'Status', render: (r) => (
+      <div className="row-actions">
+        {r.status === 'recommended' && <Button size="sm" variant="outline" onClick={() => setStatus(r, 'in_progress')}>Investigate</Button>}
+        {['recommended', 'in_progress'].includes(r.status) && <Button size="sm" variant="outline" onClick={() => setStatus(r, 'completed')}><CheckCircle2 size={13} /> Complete</Button>}
+        {['recommended', 'in_progress'].includes(r.status) && <Button size="sm" variant="ghost" onClick={() => setStatus(r, 'dismissed')}>Dismiss</Button>}
+      </div>
+    ) },
   ];
 
   return (
     <div className="page">
-      <div className="intro-strip">
-        <div>
-          <strong>Recovery operations</strong>
-          <span>Every action requires a confirmation. Guardrails (max retries, max amount, risk threshold) are enforced by the backend.</span>
-        </div>
+      <section className="stats-grid">
+        <StatCard label="Total opportunities" value={actionsApi.data ? counts.total : 'No data available'} sub="from failed payments and abandoned checkouts" icon={AlertTriangle} />
+        <StatCard label="High priority" value={actionsApi.data ? counts.high : 'No data available'} sub="repeated or high-value issues" icon={AlertTriangle} />
+        <StatCard label="Medium priority" value={actionsApi.data ? counts.medium : 'No data available'} sub="normal recovery opportunities" icon={RefreshCw} />
+        <StatCard label="Completed" value={actionsApi.data ? counts.completed : 'No data available'} sub="status tracked only" icon={CheckCircle2} />
+      </section>
+      <Panel title="Recovery opportunities" subtitle={`${filteredRows.length} opportunities · ${dateRange.label}`} actions={<div className="panel-actions">
+        <Field><Select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)}><option value="">All priorities</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></Select></Field>
+        <Field><Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="">All statuses</option><option value="recommended">Recommended</option><option value="in_progress">In progress</option><option value="completed">Completed</option><option value="dismissed">Dismissed</option></Select></Field>
         <Button variant="outline" size="sm" onClick={actionsApi.refresh}><RefreshCw size={13} /> Refresh</Button>
-      </div>
-
-      <Panel
-        title="Recovery opportunities"
-        subtitle={`${rows.length} ranked opportunities · ${dateRange.label}`}
-        pad={false}
-      >
-        {actionsApi.networkError ? (
-          <ErrorState error={actionsApi.error} onRetry={actionsApi.refresh} />
-        ) : (
-          <DataTable
-            loading={actionsApi.loading}
-            waiting={actionsApi.unavailable}
-            minWidth={1180}
-            emptyTitle="No recovery opportunities"
-            emptyDescription="AI-ranked payouts appear here from /api/recovery/actions. Nothing to recover right now."
-            columns={columns}
-            rows={rows}
-          />
-        )}
+      </div>} pad={false}>
+        {actionsApi.networkError ? <ErrorState error={actionsApi.error} onRetry={actionsApi.refresh} /> : actionsApi.unavailable ? <WaitingState title="Waiting for recovery data" description="Recovery recommendations appear here from the live payments and checkout records." /> : <DataTable loading={actionsApi.loading} emptyTitle="No recovery opportunities" emptyDescription="No failed payment or abandoned checkout currently needs investigation." columns={columns} rows={filteredRows} minWidth={1500} />}
       </Panel>
-
-      <Panel
-        title="Action history"
-        subtitle={`${history.length} executed actions log · ${dateRange.label}`}
-        actions={<History size={16} className="muted-icon" />}
-        pad={false}
-      >
-        {histApi.networkError ? (
-          <ErrorState error={histApi.error} onRetry={histApi.refresh} />
-        ) : (
-          <DataTable
-            loading={histApi.loading}
-            waiting={histApi.unavailable}
-            minWidth={720}
-            emptyTitle="No actions executed yet"
-            emptyDescription="Approved recovery actions will be logged here (source: /api/recovery/actions/history)."
-            columns={HISTORY_COLUMNS}
-            rows={history}
-          />
-        )}
-      </Panel>
-
-      <ConfirmDialog
-        open={!!pending}
-        onClose={() => setPending(null)}
-        onConfirm={runAction}
-        title={`${pending?.meta?.label || 'Run'} recovery action?`}
-        description={
-          pending
-            ? `${pending.meta?.label} on ${pending.row.payment_id || pending.row.id} (${pending.row.amount != null ? fmtINR(pending.row.amount) : '—'}). This is sent to POST /api/recovery/actions/${pending.row.id}/execute for backend approval and execution.`
-            : undefined
-        }
-        confirmLabel={pending?.meta?.label || 'Confirm'}
-        danger={pending ? DANGEROUS_ACTIONS.includes(pending.action) : false}
-      />
     </div>
   );
 }

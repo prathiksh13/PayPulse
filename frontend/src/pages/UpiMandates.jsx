@@ -23,41 +23,35 @@ export function UpiMandates() {
   const [viewing, setViewing] = useState(null);
 
   const list = useApi(() => getMandates({ from: dateRange.from, to: dateRange.to }), [dateRange]);
+  const grouped = useApi(
+    () => getMandates({ from: dateRange.from, to: dateRange.to, group: 'day' }),
+    [dateRange],
+  );
   const rows = list.data?.items || list.data?.mandates || (Array.isArray(list.data) ? list.data : []);
+  const counts = list.data?.counts || {};
 
   const stats = useMemo(() => {
-    const out = { total: rows.length, active: 0, failed: 0, pending: 0, successRate: null };
-    let succeeded = 0;
-    rows.forEach((m) => {
-      const st = String(m.status || '').toLowerCase();
-      if (['active', 'success', 'authorized'].includes(st)) { out.active += 1; succeeded += 1; }
-      if (['failed', 'rejected'].includes(st)) out.failed += 1;
-      if (['pending', 'processing', 'attempted'].includes(st)) out.pending += 1;
-    });
-    if (rows.length > 0) out.successRate = (succeeded / rows.length) * 100;
+    const out = {
+      total: counts.total ?? list.data?.total ?? rows.length,
+      active: counts.active ?? 0,
+      failed: counts.failed ?? 0,
+      pending: counts.pending ?? 0,
+      successRate: null,
+    };
+    if (out.total > 0) out.successRate = (out.active / out.total) * 100;
     return out;
-  }, [rows]);
+  }, [rows, counts, list.data]);
 
   const trend = useMemo(() => {
-    const byDay = {};
-    rows.forEach((m) => {
-      const day = String(m.created_at || m.createdAt || '').slice(0, 10);
-      const bucket = byDay[day] || (byDay[day] = { date: day, active: 0, failed: 0 });
-      const st = String(m.status || '').toLowerCase();
-      if (['active', 'success', 'authorized'].includes(st)) bucket.active += 1;
-      if (['failed', 'rejected'].includes(st)) bucket.failed += 1;
-    });
-    return Object.values(byDay)
-      .filter((d) => d.date)
-      .sort((a, b) => a.date.localeCompare(b.date));
-  }, [rows]);
+    return grouped.data?.items || [];
+  }, [grouped.data]);
 
   const failureReasons = useMemo(() => {
     const byReason = {};
     rows.forEach((m) => {
-      const st = String(m.status || '').toLowerCase();
+      const st = String(m.status || '').trim().toLowerCase();
       if (!['failed', 'rejected'].includes(st)) return;
-      const reason = String(m.failure_reason || m.failureReason || 'Unknown').slice(0, 48);
+      const reason = String(m.failure_reason ?? m.failureReason ?? 'Unknown').trim().slice(0, 48) || 'Unknown';
       byReason[reason] = (byReason[reason] || 0) + 1;
     });
     return Object.entries(byReason)
@@ -98,11 +92,11 @@ export function UpiMandates() {
             { key: 'active', name: 'Active', color: '#10b981' },
             { key: 'failed', name: 'Failed', color: '#ef4444' },
           ]}
-          loading={list.loading}
-          unavailable={list.unavailable}
-          networkError={list.networkError}
-          errorText={list.error}
-          onRetry={list.refresh}
+          loading={list.loading || grouped.loading}
+          unavailable={list.unavailable || grouped.unavailable}
+          networkError={list.networkError || grouped.networkError}
+          errorText={list.error || grouped.error}
+          onRetry={() => { list.refresh(); grouped.refresh(); }}
         />
         <BarChartView
           title="Mandate failure reasons"
@@ -121,9 +115,9 @@ export function UpiMandates() {
 
       <Panel
         title="Mandates"
-        subtitle={`${rows.length} mandates · ${dateRange.label}`}
+         subtitle={`${list.data?.total ?? rows.length} mandates · ${dateRange.label}`}
         actions={
-          <Button variant="outline" size="sm" onClick={list.refresh}>
+          <Button variant="outline" size="sm" onClick={() => { list.refresh(); grouped.refresh(); }}>
             <RefreshCw size={13} /> Refresh
           </Button>
         }

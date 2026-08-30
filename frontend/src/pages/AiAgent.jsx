@@ -1,65 +1,28 @@
-import { useState } from 'react';
 import {
   Bot, Radar, SearchCheck, Lightbulb, Zap, IndianRupee, AlertTriangle,
-  Activity, RefreshCw,
+  Activity,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { getAgentStatus, getAgentInvestigations, getRecoveryActions, executeRecoveryAction } from '../api';
+import { getAgentStatus, getAgentInvestigations } from '../api';
 import { useApp } from '../context/AppContext';
-import { useToast } from '../context/ToastContext';
-import { navigate } from '../hooks/useHashRoute';
 import { Panel } from '../components/ui/Panel';
 import { StatCard } from '../components/ui/StatCard';
 import { Button } from '../components/ui/Button';
 import { ErrorState } from '../components/ui/ErrorState';
 import { WaitingState } from '../components/ui/EmptyState';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { AiDecisionTimeline } from '../components/agent/AiDecisionTimeline';
-import { AiRecommendationCard, RecommendationFallback } from '../components/agent/AiRecommendationCard';
 import { AgentChat } from '../components/agent/AgentChat';
 import { fmtCompact, fmtNum, fmtPct, fmtDateTime } from '../utils/format';
 
 export function AiAgent() {
   const { dateRange, settings } = useApp();
-  const toast = useToast();
 
   const statusApi = useApi(getAgentStatus, []);
   const invApi = useApi(getAgentInvestigations, []);
-  const recApi = useApi(() => getRecoveryActions({ status: 'pending' }), []);
 
   const status = statusApi.data || {};
   const investigations = invApi.data?.items || invApi.data?.investigations || (Array.isArray(invApi.data) ? invApi.data : []);
-  const recommendations = recApi.data?.items || recApi.data?.actions || (Array.isArray(recApi.data) ? recApi.data : []);
-
-  const [pendingAction, setPendingAction] = useState(null);
-  const [executing, setExecuting] = useState(false);
-
   const engaged = !statusApi.unavailable && !statusApi.networkError && !!statusApi.data;
-
-  const confirmExecute = async () => {
-    if (!pendingAction) return;
-    setExecuting(true);
-    const id = pendingAction.id;
-    const res = await executeRecoveryAction(id, pendingAction.primary_action || 'retry');
-    setExecuting(false);
-    setPendingAction(null);
-    if (res.ok) {
-      toast('Recovery action executed', 'success', { description: `${id} — the backend is processing it.` });
-      recApi.refresh();
-      statusApi.refresh();
-    } else if (res.status === 404) {
-      toast('Recovery endpoint pending', 'error', {
-        description: `POST /api/recovery/actions/${id}/execute is not implemented yet. Wire it to approve and run this action.`,
-      });
-    } else {
-      toast('Action failed', 'error', { description: res.error });
-    }
-  };
-
-  const reviewAction = (id) => {
-    navigate('/recovery');
-    toast('Opening recovery workspace', 'info', { description: id });
-  };
 
   const pipelineStatus = status.pipeline || (engaged ? null : {});
 
@@ -138,61 +101,7 @@ export function AiAgent() {
         </Panel>
       </section>
 
-      <Panel
-        title="Recommended actions"
-        subtitle={`AI-ranked actions with risk, impact and evidence · ${dateRange.label}`}
-        actions={
-          <Button variant="outline" size="sm" onClick={recApi.refresh}>
-            <RefreshCw size={13} /> Refresh
-          </Button>
-        }
-      >
-        {recApi.loading ? (
-          <WaitingState title="Loading recommendations…" />
-        ) : recApi.networkError ? (
-          <ErrorState error={recApi.error} onRetry={recApi.refresh} />
-        ) : recApi.unavailable ? (
-          <WaitingState
-            title="Waiting for recovery recommendations"
-            description="Recommended actions — retry eligible payments, avoid repeated retries, notify customers, escalate provider issues, refund where appropriate — appear here from /api/recovery/actions."
-          />
-        ) : recommendations.length === 0 ? (
-          <RecommendationFallback />
-        ) : (
-          <div className="recos-grid">
-            {recommendations.map((r) => (
-              <AiRecommendationCard
-                key={r.id}
-                id={r.id}
-                recommendation={r.recommended_action || r.action}
-                reason={r.reason}
-                confidence={r.recovery_probability ?? r.confidence}
-                impact={r.expected_impact ?? r.impact}
-                risk={r.risk}
-                evidence={r.recommendation_reason || r.evidence}
-                onExecute={(id) => setPendingAction(recommendations.find((x) => x.id === id) || { id })}
-                onReview={reviewAction}
-              />
-            ))}
-          </div>
-        )}
-      </Panel>
-
       <AgentChat dateRange={dateRange} />
-
-      <ConfirmDialog
-        open={!!pendingAction}
-        onClose={() => setPendingAction(null)}
-        onConfirm={confirmExecute}
-        title="Execute recovery action?"
-        description={
-          pendingAction
-            ? `${pendingAction.recommended_action || 'Retry eligible payments'} for ${pendingAction.id}. This will be routed through the backend with your current approval guardrails (${settings.requireApproval ? 'approval required' : 'auto-approve'}).`
-            : undefined
-        }
-        confirmLabel="Execute"
-        loading={executing}
-      />
     </div>
   );
 }

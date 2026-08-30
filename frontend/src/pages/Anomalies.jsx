@@ -14,7 +14,7 @@ import { Select, Field } from '../components/ui/Field';
 import { SeverityBadge } from '../components/ui/StatusBadge';
 import { AnomalyDrawer } from '../components/anomalies/AnomalyDrawer';
 import { ANOMALY_TYPE, SEVERITY_ORDER } from '../types';
-import { fmtNum, fmtCompact, fmtDateTime, titleCase } from '../utils/format';
+import { fmtNum, fmtDateTime, titleCase } from '../utils/format';
 
 export function Anomalies() {
   const { dateRange } = useApp();
@@ -28,12 +28,12 @@ export function Anomalies() {
   const rows = api.data?.items || api.data?.anomalies || (Array.isArray(api.data) ? api.data : []);
 
   const counts = useMemo(() => {
-    const out = { active: 0, resolved: 0, critical: 0 };
+    const out = { total: rows.length, critical: 0, high: 0, medium: 0 };
     rows.forEach((a) => {
-      const st = String(a.status || '').toLowerCase();
-      if (st === 'resolved') out.resolved += 1;
-      else out.active += 1;
-      if (String(a.severity).toLowerCase() === 'critical') out.critical += 1;
+      const severity = String(a.severity || '').toLowerCase();
+      if (severity === 'critical') out.critical += 1;
+      if (severity === 'high') out.high += 1;
+      if (severity === 'medium') out.medium += 1;
     });
     return out;
   }, [rows]);
@@ -43,9 +43,10 @@ export function Anomalies() {
   return (
     <div className="page">
       <section className="stats-grid">
-        <StatCard label="Active anomalies" value={api.data ? fmtNum(counts.active) : 'No data available'} sub="open and being investigated" icon={Siren} />
-        <StatCard label="Resolved anomalies" value={api.data ? fmtNum(counts.resolved) : 'No data available'} sub="closed by agent or manually" icon={CheckCircle2} />
+        <StatCard label="Total anomalies" value={api.data ? fmtNum(counts.total) : 'No data available'} sub="detected in selected window" icon={Siren} />
         <StatCard label="Critical severity" value={api.data ? fmtNum(counts.critical) : 'No data available'} sub="needs immediate attention" icon={AlertTriangle} />
+        <StatCard label="High severity" value={api.data ? fmtNum(counts.high) : 'No data available'} sub="requires investigation" icon={AlertTriangle} />
+        <StatCard label="Medium severity" value={api.data ? fmtNum(counts.medium) : 'No data available'} sub="monitor and investigate" icon={CheckCircle2} />
       </section>
 
       <Panel
@@ -79,7 +80,7 @@ export function Anomalies() {
         ) : api.networkError ? (
           <ErrorState error={api.error} onRetry={api.refresh} />
         ) : api.unavailable ? (
-          <WaitingState title="Waiting for anomaly detection" description="Anomalies — UPI failure spikes, card failure spikes, conversion drops, provider timeouts, mandate spikes and unusual retry rates — appear here from GET /api/anomalies." />
+          <WaitingState title="Insufficient historical data" description={`A reliable baseline is not available for: ${(api.data?.insufficient_data || []).join(', ') || 'the selected window'}.`} />
         ) : rows.length === 0 ? (
           <WaitingState title="No anomalies detected" description="The agent found nothing unusual across your payment flow in this window." />
         ) : (
@@ -89,15 +90,18 @@ export function Anomalies() {
                 <div className="anomaly-main">
                   <div className="anomaly-title">
                     <SeverityBadge value={a.severity} />
-                    <strong>{anomalyName(a)}</strong>
+                    <strong>{a.title || anomalyName(a)}</strong>
                   </div>
-                  <p>{a.likely_cause || a.ai_explanation?.[0] || 'No AI explanation yet.'}</p>
+                  <p>{a.description || a.likely_cause || 'No description available.'}</p>
                 </div>
                 <div className="anomaly-metrics">
                   <div><span>Detected</span><strong>{fmtDateTime(a.detected_at || a.detectedAt || a.created_at)}</strong></div>
+                  <div><span>{a.metric || 'Current'}</span><strong>{a.current_value != null ? a.current_value : '—'}</strong></div>
+                  <div><span>Baseline</span><strong>{a.baseline_value != null ? a.baseline_value : '—'}</strong></div>
+                  <div><span>Change</span><strong>{a.change_percent != null ? `${a.change_percent > 0 ? '+' : ''}${a.change_percent}%` : '—'}</strong></div>
                   <div><span>Affected</span><strong>{a.affected_transactions != null ? `${fmtNum(a.affected_transactions)} txns` : '—'}</strong></div>
-                  <div><span>At risk</span><strong>{a.amount_at_risk != null ? fmtCompact(a.amount_at_risk ?? a.amountAtRisk) : '—'}</strong></div>
                 </div>
+                {a.supporting_data?.length > 0 && <p className="muted">Supporting data: {a.supporting_data.map((item) => JSON.stringify(item)).join(' · ')}</p>}
                 <div className="anomaly-actions">
                   <Button size="sm" variant="outline" onClick={() => setViewing(a.id)}>
                     Investigate <ArrowUpRight size={13} />
