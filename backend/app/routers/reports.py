@@ -1,14 +1,32 @@
 from datetime import timedelta
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import DailyReport
 from ..services.reports import VALID_TYPES, generate_report, persist_daily_report
 from ..utils.helpers import resolve_range
+from ..services.report_summary import build_summary
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+
+@router.get("/summary")
+def summary_report(
+    period: str = Query("7d"),
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+    db: Session = Depends(get_db),
+):
+    if period not in {"today", "7d", "30d"} and not (from_date and to_date):
+        raise HTTPException(status_code=422, detail="period must be today, 7d, or 30d")
+    try:
+        return build_summary(db, period, from_date, to_date)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Report data is temporarily unavailable") from exc
 
 
 @router.get("")

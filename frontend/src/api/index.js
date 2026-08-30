@@ -105,7 +105,7 @@ export const getRecoveryHistory = (range = {}) =>
 
 // ---------- Reports ----------
 export const getReports = (config = {}) =>
-  request(`/reports${qs(config)}`);
+  request(`/reports/summary${qs(config)}`);
 
 // ---------- Settings ----------
 export const getSettings = () => request('/settings');
