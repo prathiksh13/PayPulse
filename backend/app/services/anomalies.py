@@ -228,6 +228,10 @@ def detect_with_status(db: Session, from_date: str | None = None, to_date: str |
         existing.metric_current = item["current"]
         existing.metric_baseline = item["baseline"]
         existing.affected_transactions = item["affected"]
+        existing.amount_at_risk = next(
+            (e.get("amount") for e in item["supporting"] if isinstance(e, dict) and e.get("amount") is not None),
+            0,
+        )
         existing.likely_cause = item["description"]
         existing.ai_explanation = [item["title"], item["description"], {"metric": item["metric"], "supporting_data": item["supporting"]}]
         stored.append(existing)

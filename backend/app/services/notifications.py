@@ -33,7 +33,7 @@ def build_notifications(db: Session, limit: int = 20) -> list[dict]:
 
     recoveries = (
         db.query(RecoveryAction)
-        .filter(RecoveryAction.status.in_(("pending", "in_progress", "executed")))
+        .filter(RecoveryAction.status.in_(("recommended", "pending", "in_progress", "executed")))
         .order_by(RecoveryAction.created_at.desc())
         .all()
     )

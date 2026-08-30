@@ -8,7 +8,7 @@ import httpx
 
 from ..config import settings
 from ..models import AiDecision, Payment, RecoveryAction
-from ..utils.helpers import iso, to_float
+from ..utils.helpers import iso, resolve_range, to_float
 from . import analytics as analytics_svc
 from .anomalies import (
     MIN_TRANSACTIONS,
@@ -114,9 +114,10 @@ def _exec(ctx: dict, name: str, args: dict) -> dict:
     if name == "get_payment_metrics":
         return analytics_svc.compute_summary(db, frm, to)
     if name == "get_failed_payments":
+        start, end = resolve_range(frm, to)
         items = (
             db.query(Payment)
-            .filter(Payment.status.in_(("failed", "attempted")))
+            .filter(Payment.status.in_(("failed", "attempted")), Payment.created_at >= start, Payment.created_at < end)
             .order_by(Payment.created_at.desc())
             .limit(int(args.get("limit", 10)))
             .all()
@@ -149,7 +150,7 @@ def _exec(ctx: dict, name: str, args: dict) -> dict:
         ensure_candidates(db)
         cands = (
             db.query(RecoveryAction)
-            .filter(RecoveryAction.status == "pending")
+            .filter(RecoveryAction.status.in_(("recommended", "pending", "in_progress")))
             .order_by(RecoveryAction.recovery_probability.desc())
             .limit(int(args.get("limit", 10)))
             .all()
@@ -172,7 +173,8 @@ def _exec(ctx: dict, name: str, args: dict) -> dict:
 def _deterministic_answer(db, question: str, from_date, to_date) -> str:
     """Answers common operations questions from real tool outputs without an LLM."""
     q = question.lower()
-    failures = db.query(Payment).filter(Payment.status.in_(("failed", "attempted"))).count()
+    start, end = resolve_range(from_date, to_date)
+    failures = db.query(Payment).filter(Payment.status.in_(("failed", "attempted")), Payment.created_at >= start, Payment.created_at < end).count()
     summary = analytics_svc.compute_summary(db, from_date, to_date)
     breakdown = analytics_svc.failure_breakdown(db, from_date, to_date, limit=5)
     mandates = analytics_svc.mandate_stats(db, from_date, to_date)
@@ -196,7 +198,7 @@ def _deterministic_answer(db, question: str, from_date, to_date) -> str:
         ensure_candidates(db)
         cands = (
             db.query(RecoveryAction)
-            .filter(RecoveryAction.status == "pending")
+            .filter(RecoveryAction.status.in_(("recommended", "pending", "in_progress")))
             .order_by(RecoveryAction.recovery_probability.desc())
             .limit(5)
             .all()
@@ -379,7 +381,7 @@ def agent_status(db) -> dict:
 
     active_anomalies = db.query(Anomaly).filter(Anomaly.status == "active").count()
     resolved_anomalies = db.query(Anomaly).filter(Anomaly.status == "resolved").count()
-    pending_actions = db.query(RecoveryAction).filter(RecoveryAction.status == "pending").count()
+    pending_actions = db.query(RecoveryAction).filter(RecoveryAction.status.in_(("recommended", "pending", "in_progress"))).count()
     executed_actions = db.query(RecoveryAction).filter(RecoveryAction.status == "executed").count()
     decisions = db.query(AiDecision).count()
     recovered = recovered_amount(db)

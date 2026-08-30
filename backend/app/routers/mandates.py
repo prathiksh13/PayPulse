@@ -7,7 +7,7 @@ from ..database import get_db
 from ..config import settings
 from ..models import MandateEvent, Payment, UpiMandate
 from ..services.serializers import mandate_to_dict
-from ..utils.helpers import iso, resolve_range
+from ..utils.helpers import calendar_days, iso, resolve_range
 
 # NOTE: no prefix here — main.py mounts this router at /api/mandates AND
 # /api/upi-mandates, so the route paths ('', /{mandate_id}) are the full
@@ -44,7 +44,7 @@ def list_mandates(
         q = q.filter(UpiMandate.status == status)
 
     if group == "day":
-        bucket = cast(UpiMandate.created_at, Date) if settings.is_postgres else func.date(UpiMandate.created_at)
+        bucket = cast(func.timezone("UTC", UpiMandate.created_at), Date) if settings.is_postgres else func.date(UpiMandate.created_at)
         grouped = q.with_entities(
             bucket.label("period"),
             UpiMandate.status,
@@ -61,10 +61,14 @@ def list_mandates(
                 "pending": 0,
                 "cancelled": 0,
             })
-            normalized = mandate_status if mandate_status in {"active", "failed", "pending", "cancelled"} else "pending"
+            normalized = mandate_status if mandate_status in {"active", "failed", "pending", "cancelled"} else "failed" if mandate_status in {"rejected", "halted"} else "cancelled" if mandate_status == "expired" else "pending"
             item["total"] += count
             item[normalized] += count
-        return {"items": list(by_day.values()), "group": "day"}
+        items = []
+        for day in calendar_days(start, end):
+            key = day.isoformat()
+            items.append(by_day.get(key, {"date": key, "total": 0, "active": 0, "failed": 0, "pending": 0, "cancelled": 0}))
+        return {"items": items, "group": "day"}
 
     total = q.count()
     rows = q.order_by(UpiMandate.created_at.desc()).offset(((page or 1) - 1) * (limit or 100)).limit(limit or 100).all()

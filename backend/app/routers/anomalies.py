@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Anomaly
 from ..services.anomalies import detect_with_status, resolve_anomaly
+from ..services.analytics import SUPPORTED_ANOMALY_TYPES
 from ..services.serializers import anomaly_to_dict
 from ..utils.helpers import resolve_range
 
@@ -30,11 +31,7 @@ def list_anomalies(
         db.rollback()
         raise HTTPException(status_code=503, detail="Anomaly detection data is temporarily unavailable") from exc
 
-    supported_types = (
-        "payment_failure_spike", "payment_success_rate_drop", "payment_method_anomaly",
-        "checkout_dropoff_spike", "repeated_failure_pattern",
-    )
-    q = db.query(Anomaly).filter(Anomaly.anomaly_type.in_(supported_types), Anomaly.detected_at >= start, Anomaly.detected_at < end)
+    q = db.query(Anomaly).filter(Anomaly.anomaly_type.in_(SUPPORTED_ANOMALY_TYPES), Anomaly.detected_at >= start, Anomaly.detected_at < end)
     if status:
         q = q.filter(Anomaly.status == status)
     if severity:

@@ -81,7 +81,7 @@ def _analyze(db: Session) -> dict:
     covered = {
         r.payment_id
         for r in db.query(RecoveryAction).filter(
-            RecoveryAction.status.in_(("pending", "in_progress"))
+            RecoveryAction.status.in_(("recommended", "pending", "in_progress"))
         ).all()
     }
     failed_rows = (
@@ -233,7 +233,7 @@ def _enrich_recovery_actions(db: Session, payment_ids: list[str], classification
     for pid in payment_ids:
         rec = db.query(RecoveryAction).filter(
             RecoveryAction.payment_id == pid,
-            RecoveryAction.status.in_(("pending", "in_progress")),
+            RecoveryAction.status.in_(("recommended", "pending", "in_progress")),
         ).order_by(RecoveryAction.created_at.desc()).first()
         if rec is None:
             continue

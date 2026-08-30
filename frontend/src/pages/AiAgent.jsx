@@ -5,6 +5,7 @@ import {
 import { useApi } from '../hooks/useApi';
 import { getAgentStatus, getAgentInvestigations } from '../api';
 import { useApp } from '../context/AppContext';
+import { useToast } from '../context/ToastContext';
 import { Panel } from '../components/ui/Panel';
 import { StatCard } from '../components/ui/StatCard';
 import { Button } from '../components/ui/Button';
@@ -16,6 +17,7 @@ import { fmtCompact, fmtNum, fmtPct, fmtDateTime } from '../utils/format';
 
 export function AiAgent() {
   const { dateRange, settings } = useApp();
+  const toast = useToast();
 
   const statusApi = useApi(getAgentStatus, []);
   const invApi = useApi(getAgentInvestigations, []);

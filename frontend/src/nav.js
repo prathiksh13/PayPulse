@@ -67,5 +67,5 @@ export function matchRoute(path) {
   for (const item of NAV_ITEMS) {
     if (item.path === path) return item;
   }
-  return NAV_ITEMS[0];
+  return null;
 }

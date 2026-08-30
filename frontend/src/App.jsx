@@ -53,7 +53,7 @@ function Shell() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const activeItem = matchRoute(route.path);
-  const activeKey = activeItem.key;
+  const activeKey = activeItem?.key;
   const Page = PAGES[activeKey] || NotFound;
 
   return (

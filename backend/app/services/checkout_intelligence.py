@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..models import CheckoutEvent, CheckoutSession, Payment
-from ..utils.helpers import iso, resolve_range, to_float
+from ..utils.helpers import calendar_days, iso, resolve_range, to_float
 
 SUCCESS_PAYMENT_STATUSES = {"success", "captured", "authorized"}
 FAILED_PAYMENT_STATUSES = {"failed", "attempted"}
@@ -147,6 +147,7 @@ def summary(db: Session, from_date: str | None, to_date: str | None) -> dict:
 
 
 def trend(db: Session, from_date: str | None, to_date: str | None) -> list[dict]:
+    start, end = resolve_range(from_date, to_date)
     by_date: dict[str, dict] = {}
     for record in _records(db, from_date, to_date):
         day = str(record["created_at"])[:10]
@@ -155,7 +156,7 @@ def trend(db: Session, from_date: str | None, to_date: str | None) -> list[dict]
         bucket["completed"] += int(record["completed"])
         bucket["dropped_off"] += int(record["dropped_off"])
         bucket["failed"] += int(record["failed"])
-    return [by_date[key] for key in sorted(by_date)]
+    return [by_date.get(day.isoformat(), {"date": day.isoformat(), "attempts": 0, "completed": 0, "dropped_off": 0, "failed": 0}) for day in calendar_days(start, end)]
 
 
 def dropoff_reasons(db: Session, from_date: str | None, to_date: str | None) -> list[dict]:

@@ -7,12 +7,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models import Anomaly, CheckoutEvent, Payment, RecoveryAction
-from ..utils.helpers import iso, to_float
+from ..utils.helpers import calendar_days, iso, now_utc, to_float
 from . import checkout_intelligence
+from .analytics import SUPPORTED_ANOMALY_TYPES
 
 SUCCESS = {"success", "captured", "authorized"}
 FAILED = {"failed", "attempted"}
-ANOMALY_TYPES = {"payment_failure_spike", "payment_success_rate_drop", "payment_method_anomaly", "checkout_dropoff_spike", "repeated_failure_pattern"}
+ANOMALY_TYPES = set(SUPPORTED_ANOMALY_TYPES)
 
 
 def period_range(period: str, from_date: str | None = None, to_date: str | None = None) -> tuple[datetime, datetime, int]:
@@ -26,7 +27,7 @@ def period_range(period: str, from_date: str | None = None, to_date: str | None 
             days,
         )
     days = {"today": 1, "1d": 1, "7d": 7, "30d": 30}.get((period or "7d").lower(), 7)
-    today = date.today()
+    today = now_utc().date()
     start = datetime.combine(today - timedelta(days=days - 1), datetime.min.time(), tzinfo=timezone.utc)
     end = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
     return start, end, days
@@ -90,7 +91,7 @@ def _method_performance(db: Session, start: datetime, end: datetime) -> list[dic
     return [{"method": method, "total": values["total"], "failed": values["failed"], "failure_rate": round(values["failed"] / values["total"] * 100, 2) if values["total"] else None} for method, values in sorted(methods.items())]
 
 
-def _payment_trend(rows: list[Payment]) -> list[dict]:
+def _payment_trend(rows: list[Payment], start: datetime, end: datetime) -> list[dict]:
     buckets = defaultdict(lambda: {"date": "", "successful": 0, "failed": 0, "volume": 0.0})
     for row in rows:
         key = row.created_at.date().isoformat()
@@ -99,10 +100,10 @@ def _payment_trend(rows: list[Payment]) -> list[dict]:
         bucket["successful"] += int(row.status in SUCCESS)
         bucket["failed"] += int(row.status in FAILED)
         bucket["volume"] += to_float(row.amount) or 0
-    return [{**buckets[key], "volume": round(buckets[key]["volume"], 2)} for key in sorted(buckets)]
+    return [{**buckets.get(day.isoformat(), {"date": day.isoformat(), "successful": 0, "failed": 0, "volume": 0.0}), "volume": round(buckets.get(day.isoformat(), {}).get("volume", 0.0), 2)} for day in calendar_days(start, end)]
 
 
-def _checkout_trend(records: list[dict]) -> list[dict]:
+def _checkout_trend(records: list[dict], start: datetime, end: datetime) -> list[dict]:
     buckets = defaultdict(lambda: {"date": "", "attempts": 0, "completed": 0, "dropped_off": 0})
     for record in records:
         key = str(record["created_at"])[:10]
@@ -111,7 +112,7 @@ def _checkout_trend(records: list[dict]) -> list[dict]:
         bucket["attempts"] += 1
         bucket["completed"] += int(record["completed"])
         bucket["dropped_off"] += int(record["dropped_off"])
-    return [buckets[key] for key in sorted(buckets)]
+    return [buckets.get(day.isoformat(), {"date": day.isoformat(), "attempts": 0, "completed": 0, "dropped_off": 0}) for day in calendar_days(start, end)]
 
 
 def build_summary(db: Session, period: str = "7d", from_date: str | None = None, to_date: str | None = None) -> dict:
@@ -169,7 +170,7 @@ def build_summary(db: Session, period: str = "7d", from_date: str | None = None,
             "medium_priority": sum(row.risk == "medium" for row in recovery_rows), "completed": summary["completed_recovery_actions"],
             "recommended": recovery_counts["recommended"] + recovery_counts["pending"] + recovery_counts["in_progress"], "dismissed": recovery_counts["dismissed"] + recovery_counts["ignored"],
         },
-        "trends": {"payments": _payment_trend(payments), "checkout": _checkout_trend(checkout_records), "recovery": [{"name": key, "value": value} for key, value in recovery_counts.items()]},
+        "trends": {"payments": _payment_trend(payments, start, end), "checkout": _checkout_trend(checkout_records, start, end), "recovery": [{"name": key, "value": value} for key, value in recovery_counts.items()]},
         "failure_reasons": _failure_reasons(db, start, end),
         "comparisons": comparisons,
         "comparison_label": f"vs previous {days} day(s)",

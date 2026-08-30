@@ -56,9 +56,9 @@ export function titleCase(s) {
 export function toISODate(d) {
   const date = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(date.getTime())) return '';
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
 
@@ -72,8 +72,7 @@ export const PRESET_RANGES = [
 
 export function presetRange(preset, custom = null) {
   const now = new Date();
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const today = toISODate(start);
   const yesterday = toISODate(new Date(start.getTime() - 86400000));
   const minusDays = (n) => toISODate(new Date(start.getTime() - (n - 1) * 86400000));

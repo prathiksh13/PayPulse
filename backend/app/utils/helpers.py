@@ -53,7 +53,7 @@ def parse_date(value: str | None, default: date | None = None) -> date | None:
 
 def resolve_range(from_date: str | None, to_date: str | None) -> tuple[datetime, datetime | None]:
     """Returns an inclusive start and an exclusive end (UTC)."""
-    today = date.today()
+    today = now_utc().date()
     start = parse_date(from_date, today - timedelta(days=29))
     end = parse_date(to_date, today)
     if end is None:
@@ -61,6 +61,15 @@ def resolve_range(from_date: str | None, to_date: str | None) -> tuple[datetime,
     start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc)
     end_dt = datetime.combine(end + timedelta(days=1), time.min, tzinfo=timezone.utc)
     return start_dt, end_dt
+
+
+def calendar_days(start: datetime, end: datetime | None) -> list[date]:
+    """Return every UTC calendar date covered by an inclusive range."""
+    if end is None:
+        return []
+    current = start.astimezone(timezone.utc).date()
+    last = (end - timedelta(microseconds=1)).astimezone(timezone.utc).date()
+    return [current + timedelta(days=offset) for offset in range((last - current).days + 1)]
 
 
 def pagination(page: int | None, limit: int | None) -> tuple[int, int]:

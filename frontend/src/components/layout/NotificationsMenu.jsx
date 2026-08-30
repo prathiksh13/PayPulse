@@ -8,7 +8,7 @@ import { timeAgo } from '../../utils/format';
 export function NotificationsMenu() {
   const toast = useToast();
   const notif = useApi(getNotifications, []);
-  const items = notif.data && Array.isArray(notif.data) ? notif.data : [];
+  const items = Array.isArray(notif.data) ? notif.data : notif.data?.items || [];
   const count = notif.data?.unread ?? items.length;
 
   return (

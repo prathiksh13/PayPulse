@@ -15,10 +15,14 @@ from ..models import (
     UpiMandate,
 )
 from ..utils.cache import ttl_cache
-from ..utils.helpers import iso, resolve_range, to_float
+from ..utils.helpers import calendar_days, iso, resolve_range, to_float
 
 SUCCESS_STATUSES = ("success", "captured", "authorized")
 FAILED_STATUSES = ("failed", "attempted")
+SUPPORTED_ANOMALY_TYPES = (
+    "payment_failure_spike", "payment_success_rate_drop", "payment_method_anomaly",
+    "checkout_dropoff_spike", "repeated_failure_pattern",
+)
 
 
 @ttl_cache(ttl=20.0)
@@ -172,7 +176,6 @@ def method_distribution(db: Session, from_date: str | None, to_date: str | None)
     ]
 
 
-@ttl_cache(ttl=20.0)
 def date_bucket(db: Session, column, group: str = "day"):
     """Portable date grouping.
 
@@ -180,7 +183,8 @@ def date_bucket(db: Session, column, group: str = "day"):
     CAST to DATE / use to_char(). Branching on the connected dialect keeps the
     same query working against the local SQLite dev DB and Supabase Postgres."""
     if settings.is_postgres:
-        return cast(column, Date) if group == "day" else func.to_char(column, "YYYY-MM")
+        utc_column = func.timezone("UTC", column)
+        return cast(utc_column, Date) if group == "day" else func.to_char(utc_column, "YYYY-MM")
     return func.date(column) if group == "day" else func.strftime("%Y-%m", column)
 
 
@@ -202,20 +206,15 @@ def payment_series(
         .order_by(bucket)
         .all()
     )
-    out = []
+    by_day = {day.isoformat(): {"period": day.isoformat(), "date": day.isoformat(), "count": 0, "volume": 0.0, "success": 0, "failed": 0, "success_rate": None} for day in calendar_days(start, end)} if group == "day" else {}
     for period, count, amount, ok, bad in q:
-        out.append(
-            {
-                "period": iso(period) if period else None,
-                "date": iso(period) if period else None,
-                "count": count,
-                "volume": to_float(amount),
-                "success": ok,
-                "failed": bad,
-                "success_rate": round(ok / count * 100, 1) if count else None,
-            }
-        )
-    return out
+        key = period.isoformat() if period else None
+        item = {"period": iso(period) if period else None, "date": iso(period) if period else None, "count": count, "volume": to_float(amount), "success": ok, "failed": bad, "success_rate": round(ok / count * 100, 1) if count else None}
+        if group == "day" and key in by_day:
+            by_day[key] = item
+        elif group != "day":
+            by_day[key] = item
+    return list(by_day.values())
 
 
 @ttl_cache(ttl=20.0)
@@ -398,10 +397,11 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
         d["started"] += cnt
         if status == "abandoned":
             d["abandoned"] += cnt
-    dropoff_trend = [
-        {"date": day, "dropoff_rate": round(d["abandoned"] / d["started"] * 100, 1) if d["started"] else 0}
-        for day, d in sorted(per_day.items())
-    ]
+    dropoff_trend = []
+    for day in calendar_days(start, end):
+        key = day.isoformat()
+        d = per_day.get(key, {"started": 0, "abandoned": 0})
+        dropoff_trend.append({"date": key, "dropoff_rate": round(d["abandoned"] / d["started"] * 100, 1) if d["started"] else 0})
 
     signals = {
         "avg_time_on_checkout": round(avg_duration, 1) if avg_duration is not None else None,

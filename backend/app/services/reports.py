@@ -11,7 +11,7 @@ from ..models import (
     Payment,
     RecoveryAction,
 )
-from ..utils.helpers import iso, resolve_range, to_float
+from ..utils.helpers import iso, now_utc, resolve_range, to_float
 from . import analytics as analytics_svc
 from .recovery_engine import recovered_amount, recovery_history
 
@@ -84,8 +84,9 @@ def generate_report(db: Session, report_type: str, from_date: str | None, to_dat
         extra["checkout"] = analytics_svc.checkout_analytics(db, from_date, to_date)
 
     if report_type == "ai_operations":
-        active = db.query(Anomaly).filter(Anomaly.status == "active").count()
-        resolved = db.query(Anomaly).filter(Anomaly.status == "resolved").count()
+        supported = Anomaly.anomaly_type.in_(analytics_svc.SUPPORTED_ANOMALY_TYPES)
+        active = db.query(Anomaly).filter(supported, Anomaly.status == "active").count()
+        resolved = db.query(Anomaly).filter(supported, Anomaly.status == "resolved").count()
         investigations = db.query(AiDecision).count()
         pending = db.query(RecoveryAction).filter(RecoveryAction.status.in_(("pending", "in_progress"))).count()
         executed = db.query(RecoveryAction).filter(RecoveryAction.status == "executed").count()
@@ -123,7 +124,7 @@ def persist_daily_report(metrics: dict, period_from, period_to) -> None:
 
     db = SessionLocal()
     try:
-        day = date.today()
+        day = now_utc().date()
         existing = (
             db.query(DailyReport)
             .filter(DailyReport.report_date == day, DailyReport.report_type == "daily")

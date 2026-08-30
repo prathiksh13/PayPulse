@@ -39,7 +39,7 @@ export function ChartCard({
           <ErrorState error={errorText} onRetry={onRetry} />
         ) : unavailable ? (
           <WaitingState description={`This chart renders once the ${title.toLowerCase()} data source is wired to the API.`} />
-        ) : !hasData && !data ? (
+          ) : !hasData ? (
           <WaitingState />
         ) : (
           children

@@ -26,7 +26,7 @@ export function Overview() {
 
   const dash = useApi(() => getDashboard({ from: dateRange.from, to: dateRange.to }), [dateRange]);
   const payments = useApi(() => getPayments({ from: dateRange.from, to: dateRange.to, limit: 8 }), [dateRange]);
-  const recovery = useApi(() => getRecoveryActions({ status: 'pending', limit: 6 }), [dateRange]);
+  const recovery = useApi(() => getRecoveryActions({ limit: 6 }), [dateRange]);
   const series = useApi(() => getPaymentTrend({ from: dateRange.from, to: dateRange.to }), [dateRange]);
   const failures = useApi(() => getFailureBreakdown({ from: dateRange.from, to: dateRange.to }), [dateRange]);
   const methods = useApi(() => getMethodDistribution({ from: dateRange.from, to: dateRange.to }), [dateRange]);
@@ -76,7 +76,7 @@ export function Overview() {
                 : `Summary loaded for ${dateRange.label} from the backend.`}
           </span>
         </div>
-        <Button variant="outline" size="sm" onClick={() => Promise.all([dash.refresh(), payments.refresh(), recovery.refresh()]).then(() => toast('Dashboard refreshed', 'success'))}>
+        <Button variant="outline" size="sm" onClick={() => Promise.all([dash.refresh(), payments.refresh(), recovery.refresh(), series.refresh(), failures.refresh(), methods.refresh()]).then(() => toast('Dashboard refreshed', 'success'))}>
           <RefreshCw size={13} /> Refresh
         </Button>
       </div>
@@ -106,7 +106,7 @@ export function Overview() {
       <section className="chart-grid">
         <TrendChart
           title="Payment success / failure trend"
-          subtitle="Success and failure rate over time (live data)"
+          subtitle="Successful and failed payment counts over time (live data)"
           data={seriesByDay}
           xKey="date"
           series={[
@@ -137,7 +137,7 @@ export function Overview() {
       <section className="chart-grid two">
         <BarChartView
           title="Failure reasons"
-          subtitle="Distribution of failure codes (live data)"
+          subtitle="Distribution of persisted failure reasons (live data)"
           data={failureBar}
           xKey="name"
           barKey="count"

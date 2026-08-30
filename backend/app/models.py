@@ -53,7 +53,7 @@ class Payment(Base, TimestampMixin):
 
     is_refunded: Mapped[bool] = mapped_column(Boolean, default=False)
     refunded_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
-    attempt_count: Mapped[int] = mapped_column(Integer, default=1)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
 
     raw: Mapped[dict | None] = mapped_column(JSON)
 

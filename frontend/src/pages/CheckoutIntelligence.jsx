@@ -61,6 +61,7 @@ export function CheckoutIntelligence() {
             { key: 'attempts', name: 'Attempts', color: '#6366f1' },
             { key: 'completed', name: 'Completed', color: '#10b981' },
             { key: 'dropped_off', name: 'Dropped off', color: '#f59e0b' },
+            { key: 'failed', name: 'Failed', color: '#ef4444' },
           ]}
           loading={trend.loading}
           unavailable={trend.unavailable}

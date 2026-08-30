@@ -9,7 +9,7 @@ import { ErrorState } from '../components/ui/ErrorState';
 import { WaitingState } from '../components/ui/EmptyState';
 import { TrendChart } from '../components/charts/TrendChart';
 import { BarChartView } from '../components/charts/BarChartView';
-import { fmtINR, fmtPct, fmtCompact, fmtDateTime } from '../utils/format';
+import { fmtINR, fmtPct, fmtCompact, fmtNum, fmtDateTime } from '../utils/format';
 
 const PERIODS = [
   { value: 'today', label: 'Today' },
@@ -44,11 +44,11 @@ export function Reports() {
           <>
             <div className="report-meta"><span className="chip"><FileText size={12} /> {PERIODS.find((item) => item.value === period)?.label}</span><span className="muted">{report.range.from.slice(0, 10)} → {report.range.to.slice(0, 10)}</span></div>
             <section className="stats-grid">
-              <StatCard label="Total payments" value={fmtCompact(summary.total_payments)} sub={<Change value={report.comparisons.payment_volume} />} icon={FileText} />
-              <StatCard label="Successful payments" value={fmtCompact(summary.successful_payments)} sub={summary.success_rate != null ? fmtPct(summary.success_rate) : 'No rate available'} icon={CheckCircle2} />
-              <StatCard label="Failed payments" value={fmtCompact(summary.failed_payments)} sub={summary.failure_rate != null ? fmtPct(summary.failure_rate) : 'No rate available'} icon={XCircle} />
+              <StatCard label="Total payments" value={fmtNum(summary.total_payments)} sub={<Change value={report.comparisons.payment_volume} />} icon={FileText} />
+              <StatCard label="Successful payments" value={fmtNum(summary.successful_payments)} sub={summary.success_rate != null ? fmtPct(summary.success_rate) : 'No rate available'} icon={CheckCircle2} />
+              <StatCard label="Failed payments" value={fmtNum(summary.failed_payments)} sub={summary.failure_rate != null ? fmtPct(summary.failure_rate) : 'No rate available'} icon={XCircle} />
               <StatCard label="Payment volume" value={fmtINR(summary.payment_volume)} sub={<Change value={report.comparisons.payment_volume} />} icon={IndianRupee} />
-              <StatCard label="Checkout attempts" value={fmtCompact(summary.checkout_attempts)} sub={<Change value={report.comparisons.checkout_conversion} />} icon={FileText} />
+              <StatCard label="Checkout attempts" value={fmtNum(summary.checkout_attempts)} sub={<Change value={report.comparisons.checkout_conversion} />} icon={FileText} />
               <StatCard label="Checkout conversion" value={summary.conversion_rate != null ? fmtPct(summary.conversion_rate) : '—'} sub={summary.checkout_dropoffs != null ? `${fmtCompact(summary.checkout_dropoffs)} drop-offs` : '—'} icon={Percent} />
               <StatCard label="Recovery opportunities" value={fmtCompact(summary.recovery_opportunities)} sub={`${fmtCompact(report.recovery.recommended)} recommended`} icon={TrendingUp} />
               <StatCard label="Detected anomalies" value={fmtCompact(summary.detected_anomalies)} sub={`${fmtCompact(report.anomalies.high + report.anomalies.critical)} high/critical`} icon={AlertTriangle} />
