@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from sqlalchemy import Date, cast, func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..config import settings
 from ..models import MandateEvent, Payment, UpiMandate
 from ..services.serializers import mandate_to_dict
 from ..utils.helpers import iso, resolve_range
@@ -11,7 +12,7 @@ from ..utils.helpers import iso, resolve_range
 # NOTE: no prefix here — main.py mounts this router at /api/mandates AND
 # /api/upi-mandates, so the route paths ('', /{mandate_id}) are the full
 # sub-path. A router prefix would double it (e.g. /api/mandates/mandates).
-router = APIRouter(tags=["upti-mandates"])
+router = APIRouter(tags=["upi-mandates"])
 
 
 @router.get("")
@@ -21,14 +22,13 @@ def list_mandates(
     to_date: str | None = Query(None, alias="to"),
     status: str | None = None,
     query: str | None = None,
+    group: str | None = None,
     page: int | None = Query(None, ge=1),
     limit: int | None = Query(None, ge=1, le=500),
 ):
     start, end = resolve_range(from_date, to_date)
     q = db.query(UpiMandate).filter(UpiMandate.created_at >= start, UpiMandate.created_at < end)
 
-    if status:
-        q = q.filter(UpiMandate.status == status)
     if query:
         like = f"%{query.lower()}%"
         q = q.filter(
@@ -39,12 +39,52 @@ def list_mandates(
             )
         )
 
+    base_q = q
+    if status:
+        q = q.filter(UpiMandate.status == status)
+
+    if group == "day":
+        bucket = cast(UpiMandate.created_at, Date) if settings.is_postgres else func.date(UpiMandate.created_at)
+        grouped = q.with_entities(
+            bucket.label("period"),
+            UpiMandate.status,
+            func.count(UpiMandate.id),
+        ).group_by(bucket, UpiMandate.status).order_by(bucket)
+        by_day: dict[str, dict] = {}
+        for period, mandate_status, count in grouped.all():
+            day = iso(period)
+            item = by_day.setdefault(day, {
+                "date": day,
+                "total": 0,
+                "active": 0,
+                "failed": 0,
+                "pending": 0,
+                "cancelled": 0,
+            })
+            normalized = mandate_status if mandate_status in {"active", "failed", "pending", "cancelled"} else "pending"
+            item["total"] += count
+            item[normalized] += count
+        return {"items": list(by_day.values()), "group": "day"}
+
     total = q.count()
     rows = q.order_by(UpiMandate.created_at.desc()).offset(((page or 1) - 1) * (limit or 100)).limit(limit or 100).all()
 
+    counts = {
+        row[0]: row[1]
+        for row in base_q.with_entities(UpiMandate.status, func.count(UpiMandate.id))
+        .group_by(UpiMandate.status)
+        .all()
+    }
     return {
         "items": [mandate_to_dict(m) for m in rows],
         "total": total,
+        "counts": {
+            "total": sum(counts.values()),
+            "active": counts.get("active", 0),
+            "failed": counts.get("failed", 0),
+            "pending": counts.get("pending", 0),
+            "cancelled": counts.get("cancelled", 0),
+        },
         "page": page or 1,
         "limit": limit or 100,
         "has_more": ((page or 1) * (limit or 100)) < total,

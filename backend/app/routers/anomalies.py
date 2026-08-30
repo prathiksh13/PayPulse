@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Anomaly
-from ..services.anomalies import detect_and_store, resolve_anomaly
+from ..services.anomalies import detect_with_status, resolve_anomaly
 from ..services.serializers import anomaly_to_dict
 from ..utils.helpers import resolve_range
 
@@ -23,10 +23,18 @@ def list_anomalies(
 ):
     start, end = resolve_range(from_date, to_date)
 
-    # Detection runs against real stats; new findings are persisted (once per day/type)
-    detect_and_store(db, from_date, to_date)
+    try:
+        # Detection runs against real payment and checkout statistics only.
+        _, insufficient = detect_with_status(db, from_date, to_date)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Anomaly detection data is temporarily unavailable") from exc
 
-    q = db.query(Anomaly).filter(Anomaly.detected_at >= start, Anomaly.detected_at < end)
+    supported_types = (
+        "payment_failure_spike", "payment_success_rate_drop", "payment_method_anomaly",
+        "checkout_dropoff_spike", "repeated_failure_pattern",
+    )
+    q = db.query(Anomaly).filter(Anomaly.anomaly_type.in_(supported_types), Anomaly.detected_at >= start, Anomaly.detected_at < end)
     if status:
         q = q.filter(Anomaly.status == status)
     if severity:
@@ -40,6 +48,7 @@ def list_anomalies(
         "page": page or 1,
         "limit": limit or 100,
         "has_more": ((page or 1) * (limit or 100)) < total,
+        "insufficient_data": insufficient,
     }
 
 

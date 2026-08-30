@@ -13,6 +13,7 @@ VALID_EVENT_TYPES = {
     "checkout_started",
     "payment_method_selected",
     "payment_initiated",
+    "payment_failed",
     "otp_started",
     "otp_failed",
     "otp_completed",
@@ -61,14 +62,14 @@ def ingest_session_events(db: Session, events: list[dict]) -> dict:
             rejected += 1
             continue
 
-        event_id = ev.get("event_id") or ev.get("id")
-        if event_id:
-            existing = db.query(CheckoutEvent).filter(CheckoutEvent.event_id == event_id).first()
-            if existing:
-                duplicates += 1
-                continue
-
         occurred_at = _parse_ts(ev.get("occurred_at") or ev.get("timestamp")) or now_utc()
+        event_id = ev.get("event_id") or ev.get("id") or (
+            f"{event_type}:{session_id}:{occurred_at.isoformat()}"
+        )
+        existing = db.query(CheckoutEvent).filter(CheckoutEvent.event_id == event_id).first()
+        if existing:
+            duplicates += 1
+            continue
 
         db.add(CheckoutEvent(
             event_id=event_id,
@@ -236,6 +237,11 @@ def record_payment_outcome(
         session.status = "completed"
         session.ended_at = now
     else:
+        _append_event(
+            db, session_id=session_id, event_type="payment_failed",
+            event_id=f"payment_failed:{session_id}:{pid or 'x'}",
+            method=method, error_code=error_code, error_reason=error_reason,
+        )
         if _looks_like_otp_failure(error_code, error_reason):
             _append_event(
                 db, session_id=session_id, event_type="otp_started",

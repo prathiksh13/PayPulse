@@ -93,19 +93,24 @@ def payment_detail_to_dict(
 
 
 def mandate_to_dict(m: UpiMandate) -> dict:
+    raw = m.raw if isinstance(m.raw, dict) else {}
+    failure_code = raw.get("error_code") or raw.get("failure_code")
     return {
         "id": m.mandate_id,
         "mandate_id": m.mandate_id,
         "rzp_mandate_id": m.mandate_id,
         "customer": {"name": m.customer_name, "email": m.customer_email, "contact": m.customer_contact},
         "customer_name": m.customer_name,
+        "customer_id": m.customer_id,
         "amount": to_float(m.amount),
         "frequency": m.frequency,
         "status": m.status,
         "failure_reason": m.failure_reason,
         "failureReason": m.failure_reason,
+        "failure_code": failure_code,
         "next_debit_at": iso(m.next_debit_at),
         "nextDebitAt": iso(m.next_debit_at),
+        "next_debit": iso(m.next_debit_at),
         "created_at": iso(m.created_at),
         "createdAt": iso(m.created_at),
         "updated_at": iso(m.updated_at),
@@ -113,14 +118,20 @@ def mandate_to_dict(m: UpiMandate) -> dict:
 
 
 def recovery_to_dict(r: RecoveryAction) -> dict:
+    is_checkout = r.payment_id.startswith("checkout:")
+    source_id = r.payment_id.removeprefix("checkout:") if is_checkout else r.payment_id
     return {
         "id": str(r.id),
+        "action_id": str(r.id),
         "payment_id": r.payment_id,
-        "payment": r.payment_id,
+        "checkout_id": source_id if is_checkout else None,
+        "payment": None if is_checkout else r.payment_id,
         "recommended_action": r.recommended_action or r.primary_action,
         "primary_action": r.primary_action,
         "action": r.primary_action,
         "reason": r.reason,
+        "issue": r.reason,
+        "failure_reason": r.reason,
         "evidence": r.evidence,
         "recommendation_reason": r.evidence or r.reason,
         "recovery_probability": to_float(r.recovery_probability),
@@ -129,6 +140,7 @@ def recovery_to_dict(r: RecoveryAction) -> dict:
         "expected_impact": to_float(r.expected_impact),
         "impact": to_float(r.expected_impact),
         "risk": r.risk,
+        "priority": r.risk,
         "status": r.status,
         "amount": to_float(r.amount),
         "retry_count": r.retry_count,
@@ -143,11 +155,20 @@ def recovery_to_dict(r: RecoveryAction) -> dict:
 
 def anomaly_to_dict(a: Anomaly) -> dict:
     explanation = a.ai_explanation if isinstance(a.ai_explanation, list) else []
+    evidence = next(
+        (item for item in explanation if isinstance(item, dict) and "supporting_data" in item),
+        {},
+    )
+    change = None
+    if a.metric_current is not None and a.metric_baseline not in (None, 0):
+        change = round((a.metric_current - a.metric_baseline) / abs(a.metric_baseline) * 100, 2)
     return {
         "id": str(a.id),
         "type": a.anomaly_type,
         "anomaly_type": a.anomaly_type,
         "severity": a.severity,
+        "title": explanation[0] if explanation and isinstance(explanation[0], str) else a.anomaly_type,
+        "description": a.likely_cause,
         "status": a.status,
         "detected_at": iso(a.detected_at),
         "detectedAt": iso(a.detected_at),
@@ -155,6 +176,10 @@ def anomaly_to_dict(a: Anomaly) -> dict:
         "created_at": iso(a.created_at),
         "metric_current": to_float(a.metric_current),
         "metric_baseline": to_float(a.metric_baseline),
+        "metric": evidence.get("metric"),
+        "current_value": to_float(a.metric_current),
+        "baseline_value": to_float(a.metric_baseline),
+        "change_percent": change,
         "affected_transactions": a.affected_transactions,
         "affectedTransactions": a.affected_transactions,
         "amount_at_risk": to_float(a.amount_at_risk),
@@ -164,6 +189,7 @@ def anomaly_to_dict(a: Anomaly) -> dict:
         "likelyCause": a.likely_cause,
         "ai_explanation": explanation,
         "aiExplanation": a.ai_explanation,
+        "supporting_data": evidence.get("supporting_data", []),
         "recommended_action": a.recommended_action,
         "recommendedAction": a.recommended_action,
     }

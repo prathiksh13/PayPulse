@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from sqlalchemy import or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Payment, RecoveryAction, RecoveryOutcome
+from ..models import CheckoutEvent, CheckoutSession, Payment, RecoveryAction, RecoveryOutcome
 from ..services.recovery_engine import (
     RecoveryBlocked,
     _can_refund,
     _can_retry,
     ensure_candidates,
     execute_recovery_action,
+    FAILED_STATUSES,
     recovery_history,
+    update_action_status,
 )
 from ..services.serializers import recovery_to_dict
 from ..utils.helpers import iso
@@ -31,10 +35,16 @@ def list_actions(
     limit: int = 200,
     page: int | None = Query(None, ge=1),
 ):
-    # Ensure opportunities exist for failed payments (real DB rows only)
-    ensure_candidates(db, limit=500)
+    try:
+        ensure_candidates(db, limit=500)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Recovery data is temporarily unavailable") from exc
 
-    q = db.query(RecoveryAction)
+    # Do not surface stale payment recommendations after a payment settles.
+    q = db.query(RecoveryAction).outerjoin(Payment, RecoveryAction.payment_id == Payment.payment_id).filter(
+        or_(RecoveryAction.payment_id.like("checkout:%"), Payment.status.in_(FAILED_STATUSES))
+    )
     if status:
         q = q.filter(RecoveryAction.status == status)
     if from_date or to_date:
@@ -54,6 +64,8 @@ def list_actions(
     payments = {
         p.payment_id: p for p in db.query(Payment).filter(Payment.payment_id.in_(ids)).all()
     }
+    checkout_ids = [r.payment_id.removeprefix("checkout:") for r in rows if r.payment_id.startswith("checkout:")]
+    sessions = {s.session_id: s for s in db.query(CheckoutSession).filter(CheckoutSession.session_id.in_(checkout_ids)).all()}
     items = []
     for r in rows:
         data = recovery_to_dict(r)
@@ -62,13 +74,22 @@ def list_actions(
             data["payment_status"] = p.status
             data["payment_method"] = p.method
             data["payment_amount"] = p.amount
+            data["customer"] = {"name": p.customer_name, "email": p.email, "contact": p.contact}
             can_refund, why = _can_refund(p)
             data["can_refund"] = can_refund
             data["refund_blocked_reason"] = why
         else:
-            data["payment_status"] = None
+            session = sessions.get(r.payment_id.removeprefix("checkout:")) if r.payment_id.startswith("checkout:") else None
+            data["checkout_id"] = session.session_id if session else None
+            event = None
+            if session:
+                event = db.query(CheckoutEvent).filter(CheckoutEvent.session_id == session.session_id).order_by(CheckoutEvent.created_at.desc()).first()
+            payload = event.payload if event and isinstance(event.payload, dict) else {}
+            customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
+            data["customer"] = customer or None
+            data["payment_status"] = session.status if session else None
             data["can_refund"] = False
-            data["refund_blocked_reason"] = "Payment record not found."
+            data["refund_blocked_reason"] = "Not a payment recovery action."
         items.append(data)
     return {
         "items": items,
@@ -77,6 +98,21 @@ def list_actions(
         "limit": limit,
         "has_more": ((page or 1) * limit) < total,
     }
+
+
+@router.patch("/actions/{action_id}")
+def update_status(action_id: int, body: dict, db: Session = Depends(get_db)):
+    status = body.get("status") if isinstance(body, dict) else None
+    try:
+        action = update_action_status(db, action_id, status)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Recovery action status is temporarily unavailable") from exc
+    if action is None:
+        raise HTTPException(status_code=404, detail="Recovery action not found")
+    return recovery_to_dict(action)
 
 
 @router.get("/actions/history")

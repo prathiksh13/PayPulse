@@ -45,7 +45,7 @@ class Settings:
 
         # AI operations agent
         self.groq_api_key = os.getenv("GROQ_API_KEY", "")
-        self.groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
         self.groq_api_base = os.getenv("GROQ_API_BASE", "https://api.groq.com/openai/v1")
 
         # Anomaly detection: minimum failed transactions in the window before a

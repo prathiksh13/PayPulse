@@ -6,10 +6,12 @@ from .config import settings
 from .database import init_db
 from .routers import (
     agent,
+    ai_agent,
     analytics,
     anomalies,
     cache,
     checkout,
+    checkout_intelligence,
     health,
     mandates,
     notifications,
@@ -47,11 +49,13 @@ app.include_router(payments.router, prefix="/api")
 app.include_router(mandates.router, prefix="/api/mandates")
 app.include_router(mandates.router, prefix="/api/upi-mandates")
 app.include_router(checkout.router, prefix="/api")
+app.include_router(checkout_intelligence.router, prefix="/api")
 app.include_router(anomalies.router, prefix="/api")
 app.include_router(recovery.router, prefix="/api/recovery")
 app.include_router(recovery.router, prefix="/api/recovery-actions")
 app.include_router(reports.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
+app.include_router(ai_agent.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(cache.router, prefix="/api")

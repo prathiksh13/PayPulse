@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     AuditLog,
+    CheckoutSession,
     Payment,
     RecoveryAction,
     RecoveryOutcome,
@@ -61,70 +62,98 @@ def _risk_of(amount: float | None) -> str:
 
 
 def ensure_candidates(db: Session, limit: int | None = None, amount_at_risk_cap: float | None = None) -> list[RecoveryAction]:
-    """Create pending recovery candidates for failed, unrecovered payments using live DB rows."""
-    policy = recovery_policy(db)
+    """Materialize deterministic, non-executing recommendations from live rows."""
     limit = limit or 100
-    cap = amount_at_risk_cap if amount_at_risk_cap is not None else policy["max_recovery_amount"]
-
-    known_ids = {
-        r.payment_id
-        for r in db.query(RecoveryAction).all()
-    }
-
-    failed = (
-        db.query(Payment)
-        .filter(
-            Payment.status.in_(FAILED_STATUSES),
-            Payment.rzp_order_id.isnot(None),
-        )
-        .order_by(Payment.created_at.desc())
-        .limit(400)
-        .all()
-    )
-
-    created = 0
-    for p in failed:
-        if p.payment_id in known_ids:
+    known_ids = {r.payment_id for r in db.query(RecoveryAction.payment_id).all()}
+    failed = db.query(Payment).filter(Payment.status.in_(FAILED_STATUSES)).order_by(Payment.created_at.desc()).limit(400).all()
+    for payment in failed:
+        if payment.payment_id in known_ids:
             continue
-        if (to_float(p.amount) or 0) > cap:
-            continue
-        amount = to_float(p.amount) or 0
-        probability = score_recovery_probability(p.failure_reason)
-        primary = "retry"
-        if "sufficient_funds" in (p.failure_reason or "").lower():
+        amount = to_float(payment.amount) or 0
+        reason = (payment.failure_reason or "").strip()
+        lower_reason = reason.lower()
+        repeated_query = db.query(Payment.id).filter(Payment.status.in_(FAILED_STATUSES))
+        if payment.order_id:
+            repeated_query = repeated_query.filter(Payment.order_id == payment.order_id)
+        elif payment.email:
+            repeated_query = repeated_query.filter(Payment.email == payment.email)
+        elif payment.contact:
+            repeated_query = repeated_query.filter(Payment.contact == payment.contact)
+        repeated = repeated_query.count()
+        if not reason:
+            action = "Needs investigation"
+            primary = "escalate"
+            priority = "low"
+        elif repeated > 1:
+            action = "Manual review before further contact"
+            primary = "escalate"
+            priority = "high"
+        elif any(token in lower_reason for token in ("declin", "bank", "insufficient", "invalid")):
+            action = "Try an alternate payment method"
             primary = "notify"
-        risk = _risk_of(amount)
-        requires_approval = risk in ("high", "critical") or policy["require_approval"]
-        if probability <= 0.25:
-            # low probability → notify or leave for manual ignore; still surfaces as an opportunity
-            requires_approval = False
-
+            priority = "high" if amount >= 10000 else "medium"
+        else:
+            action = "Send a retry reminder"
+            primary = "notify"
+            priority = "high" if amount >= 10000 else "medium"
         db.add(RecoveryAction(
-            payment_id=p.payment_id,
+            payment_id=payment.payment_id,
             primary_action=primary,
-            recommended_action={
-                "retry": "Retry eligible payment",
-                "notify": "Notify customer to retry",
-            }[primary],
-            reason=p.failure_reason or "Payment failed",
-            recovery_probability=round(probability * 100, 1),
+            recommended_action=action,
+            reason=reason or "Payment failed without a stored failure reason",
+            recovery_probability=round(score_recovery_probability(reason) * 100, 1) if reason else None,
             expected_impact=amount,
-            risk=risk,
-            status="pending",
+            risk=priority,
+            status="recommended",
             amount=amount,
             retry_count=0,
-            requires_approval=requires_approval,
-            evidence=f"Live failure event: {p.failure_code or 'unknown'}; reason: {p.failure_reason or 'n/a'}",
+            requires_approval=False,
+            evidence=f"Payment record {payment.payment_id}; failure code: {payment.failure_code or 'unknown'}; repeated failures: {repeated}",
         ))
-        created += 1
+        known_ids.add(payment.payment_id)
+
+    abandoned = db.query(CheckoutSession).filter(CheckoutSession.status == "abandoned").order_by(CheckoutSession.started_at.desc()).limit(400).all()
+    for session in abandoned:
+        action_id = f"checkout:{session.session_id}"
+        if action_id in known_ids:
+            continue
+        amount = None
+        if session.payment_id:
+            payment = db.query(Payment).filter(Payment.payment_id == session.payment_id).first()
+            amount = to_float(payment.amount) if payment else None
+        db.add(RecoveryAction(
+            payment_id=action_id,
+            primary_action="notify",
+            recommended_action="Send a checkout recovery reminder",
+            reason="Checkout abandoned",
+            recovery_probability=50.0,
+            expected_impact=amount,
+            risk="medium",
+            status="recommended",
+            amount=amount,
+            retry_count=0,
+            requires_approval=False,
+            evidence=f"Checkout session {session.session_id}; abandoned at {iso(session.ended_at or session.updated_at)}",
+        ))
+        known_ids.add(action_id)
 
     db.commit()
-    q = db.query(RecoveryAction).order_by(
-        RecoveryAction.recovery_probability.desc(), RecoveryAction.created_at.desc()
-    )
+    q = db.query(RecoveryAction).order_by(RecoveryAction.created_at.desc())
     if limit:
         q = q.limit(limit)
     return [c for c in q.all()]
+
+
+def update_action_status(db: Session, action_id: int, status: str) -> RecoveryAction | None:
+    if status not in {"recommended", "in_progress", "completed", "dismissed"}:
+        raise ValueError("Unsupported recovery status")
+    action = db.query(RecoveryAction).filter(RecoveryAction.id == action_id).first()
+    if action is None:
+        return None
+    action.status = status
+    db.commit()
+    db.refresh(action)
+    return action
 
 
 class RecoveryBlocked(Exception):

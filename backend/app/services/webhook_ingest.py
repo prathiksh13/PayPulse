@@ -182,7 +182,7 @@ def _sync_mandate_from_payment(db: Session, entity: dict):
             customer_contact=notes.get("contact"),
             frequency=notes.get("frequency") or "manual",
             status="active" if payment_status in ("captured", "authorized") else "pending",
-            amount=to_float(entity.get("amount")),
+            amount=(amount / 100 if (amount := to_float(entity.get("amount"))) is not None else None),
             raw=entity,
         )
         db.add(m)
@@ -200,6 +200,12 @@ def _sync_mandate_from_payment(db: Session, entity: dict):
     else:
         if payment_status in ("captured", "authorized") and m.status != "active":
             m.status = "active"
+        amount = to_float(entity.get("amount"))
+        if amount is not None:
+            m.amount = amount / 100
+        if entity.get("customer_id"):
+            m.customer_id = entity.get("customer_id")
+        m.raw = entity
         if entity.get("error_description"):
             m.failure_reason = entity.get("error_description")
 
@@ -337,6 +343,7 @@ def _handle_mandate_event(db: Session, event: str, payload: dict):
             customer_contact=notes.get("contact") if isinstance(notes, dict) else None,
             frequency=entity.get("frequency"),
             status="pending",
+            amount=to_float(entity.get("amount")) / 100 if entity.get("amount") else None,
             raw=entity,
         )
         db.add(m)
@@ -346,27 +353,44 @@ def _handle_mandate_event(db: Session, event: str, payload: dict):
         "mandate.activated": "active",
         "mandate.created": "pending",
         "mandate.authorized": "active",
-        "mandate.started": "processing",
+        "mandate.started": "pending",
         "mandate.halted": "failed",
         "mandate.failed": "failed",
         "mandate.rejected": "failed",
         "mandate.cancelled": "cancelled",
-        "mandate.expired": "expired",
-        "mandate.paused": "paused",
+        "mandate.expired": "cancelled",
+        "mandate.paused": "pending",
+        "mandate.completed": "active",
     }
     status = status_map.get(event, m.status)
     error_reason = None
-    if status in ("failed", "rejected"):
+    if status == "failed":
+        details = entity.get("status_details")
         error_reason = (
-            entity.get("status_details", {}).get("error_description")
-            if isinstance(entity.get("status_details"), dict)
-            else entity.get("error_description")
-        )
+            details.get("error_description") or details.get("error_reason")
+            if isinstance(details, dict)
+            else None
+        ) or entity.get("error_description") or entity.get("error_reason") or entity.get("failure_reason")
     m.status = status
+    # Razorpay sends mandate amounts in paise.
+    if entity.get("amount") is not None:
+        amount = to_float(entity.get("amount"))
+        if amount is not None:
+            m.amount = amount / 100
+    if entity.get("order_id"):
+        m.rzp_order_id = entity.get("order_id")
+    if entity.get("customer_id"):
+        m.customer_id = entity.get("customer_id")
+    notes = entity.get("notes")
+    if isinstance(notes, dict):
+        m.customer_name = notes.get("customer_name") or notes.get("name") or m.customer_name
+        m.customer_email = notes.get("email") or m.customer_email
+        m.customer_contact = notes.get("contact") or m.customer_contact
+    if entity.get("frequency"):
+        m.frequency = entity.get("frequency")
+    m.raw = entity
     if error_reason:
         m.failure_reason = error_reason
-    if not m.failure_reason and "failure" in event:
-        m.failure_reason = (entity.get("error_description") or entity.get("error_reason")) or "Mandate activation failed"
 
     # next debit date
     fpd = entity.get("first_payment_date") or entity.get("next_debit_date")
