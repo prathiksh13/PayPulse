@@ -76,7 +76,7 @@ export function TestPaymentModal({ open, onClose, onComplete }) {
         key: order.key_id,
         amount: order.amount_paise,
         currency: order.currency || 'INR',
-        name: order.merchant || 'PulseOps',
+        name: order.merchant || 'PayPulse',
         description: `Test payment · ${order.order_id}`,
         order_id: order.order_id,
         prefill: { name: 'Test Customer', email: 'test@example.com', contact: '9999999999' },

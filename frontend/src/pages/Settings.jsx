@@ -106,7 +106,7 @@ export function Settings() {
 
       <div className="settings-grid">
         <Panel title="Merchant" subtitle="Workspace identity and environment">
-          {sectionHead(Building2, 'Profile', 'How this workspace is identified across PulseOps, Razorpay and reports.')}
+          {sectionHead(Building2, 'Profile', 'How this workspace is identified across PayPulse, Razorpay and reports.')}
           <div className="settings-form">
             <Field label="Merchant name">
               <TextInput value={merchant.name} onChange={(e) => updateMerchant({ name: e.target.value })} placeholder="Merchant name" />
@@ -149,7 +149,7 @@ export function Settings() {
         <Panel title="AI Agent" subtitle="Detection and automation guardrails">
           {sectionHead(Zap, 'Agent behavior', 'Controls what the agent may do without human approval.')}
           <div className="settings-form">
-            <ToggleRow title="Enable agent" description="Let PulseOps watch payment events and generate insights." checked={settings.aiEnabled} onChange={(v) => patchSettings({ aiEnabled: v })} />
+            <ToggleRow title="Enable agent" description="Let PayPulse watch payment events and generate insights." checked={settings.aiEnabled} onChange={(v) => patchSettings({ aiEnabled: v })} />
             <ToggleRow title="Auto recovery" description="Execute low-risk recovery actions automatically." checked={settings.autoRecovery} onChange={(v) => patchSettings({ autoRecovery: v })} />
             <ToggleRow title="Require approval before actions" description="Every recovery action needs explicit consent." checked={settings.requireApproval} onChange={(v) => patchSettings({ requireApproval: v })} />
             <div className="field-pair">

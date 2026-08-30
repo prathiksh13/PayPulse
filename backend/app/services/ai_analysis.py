@@ -132,7 +132,7 @@ def _fallback(context: dict, question: str) -> dict:
 
 def _groq(context: dict, question: str) -> dict:
     system = (
-        "You are the PulseOps AI Operations Agent. Use ONLY the supplied JSON context. "
+        "You are the PayPulse AI Operations Agent. Use ONLY the supplied JSON context. "
         "Never invent IDs, amounts, customers, reasons, counts, or trends. "
         "Return ONLY valid JSON with this schema: "
         '{"summary": string, "findings": [string], "recommendations": [string], '

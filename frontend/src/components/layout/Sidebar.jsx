@@ -59,7 +59,7 @@ export function Sidebar({ activeKey, mobileOpen, onCloseMobile }) {
           <Sparkles size={17} />
         </div>
         <div>
-          <strong>PulseOps</strong>
+          <strong>PayPulse</strong>
           <span>Payment Intelligence</span>
         </div>
         <button className="mobile-close" onClick={onCloseMobile} aria-label="Close menu">

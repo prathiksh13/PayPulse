@@ -1,6 +1,6 @@
 # AI Payment Operations Agent
 
-Milestone 1 project: a professional light-mode merchant payment operations dashboard ("PulseOps") with a React + Vite frontend and a FastAPI backend. The frontend reads real data only from the backend — no fake/demo payment data.
+Milestone 1 project: a professional light-mode merchant payment operations dashboard ("PayPulse") with a React + Vite frontend and a FastAPI backend. The frontend reads real data only from the backend — no fake/demo payment data.
 
 ## Stack
 - **Frontend**: React 19, Vite 6, Recharts, lucide-react (custom hash router — no react-router)

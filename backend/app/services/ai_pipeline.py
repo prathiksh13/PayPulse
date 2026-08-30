@@ -267,7 +267,7 @@ def _supportable(action: str) -> str:
 
 def _classify_with_groq(failures: list[dict], anomaly_summary: list[dict]) -> dict:
     system = (
-        "You are the PulseOps payment operations AI. Analyze Razorpay (India) payment failures "
+        "You are the PayPulse payment operations AI. Analyze Razorpay (India) payment failures "
         "and return ONLY valid JSON with this exact schema:\n"
         '{"summary": {"category": string, "root_cause": string, "recommended_action": string, '
         '"risk": "low"|"medium"|"high"|"critical", "confidence": number 0..1, "explanation": string}, '

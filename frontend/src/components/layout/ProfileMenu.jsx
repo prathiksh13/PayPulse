@@ -72,7 +72,7 @@ export function ProfileMenu() {
         open={logoutOpen}
         onClose={() => setLogoutOpen(false)}
         onConfirm={handleLogout}
-        title="Sign out of PulseOps?"
+        title="Sign out of PayPulse?"
         description="You will need to reconnect your workspace to monitor payments again."
         confirmLabel="Sign out"
         danger

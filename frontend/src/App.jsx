@@ -36,7 +36,7 @@ function NotFound() {
         <EmptyState
           icon={LayoutDashboard}
           title="Page not found"
-          description="The address you opened is not a valid PulseOps page."
+          description="The address you opened is not a valid PayPulse page."
           action={
             <button className="btn btn-primary" onClick={() => navigate('/')}>
               <Home size={14} /> Back to Overview
