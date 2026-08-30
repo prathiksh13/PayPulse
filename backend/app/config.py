@@ -33,7 +33,7 @@ class Settings:
     nothing is ever exposed through the API."""
 
     def __init__(self):
-        self.app_name = os.getenv("APP_NAME", "AI Payment Operations Agent")
+        self.app_name = os.getenv("APP_NAME", "PayPulse")
         self.app_version = os.getenv("APP_VERSION", "1.0.0")
         self.database_url = _normalize_db_url(os.getenv("DATABASE_URL", "") or SQLITE_DEFAULT)
 
