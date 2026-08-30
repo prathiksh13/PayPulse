@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 
 export const NAV_ITEMS = [
-  { key: 'overview', label: 'Overview', path: '/', icon: LayoutDashboard },
+  { key: 'overview', label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
   { key: 'payments', label: 'Payments', path: '/payments', icon: CreditCard },
   { key: 'upi-mandates', label: 'UPI Mandates', path: '/upi-mandates', icon: WalletCards },
   { key: 'checkout', label: 'Checkout Intelligence', path: '/checkout', icon: Activity },

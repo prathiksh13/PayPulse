@@ -16,6 +16,7 @@ import { matchRoute } from './nav';
 import { EmptyState } from './components/ui/EmptyState';
 import { LayoutDashboard, Home } from 'lucide-react';
 import { navigate } from './hooks/useHashRoute';
+import { Landing } from './pages/Landing';
 
 const PAGES = {
   overview: Overview,
@@ -38,7 +39,7 @@ function NotFound() {
           title="Page not found"
           description="The address you opened is not a valid PayPulse page."
           action={
-            <button className="btn btn-primary" onClick={() => navigate('/')}>
+            <button className="btn btn-primary" onClick={() => navigate('/dashboard')}>
               <Home size={14} /> Back to Overview
             </button>
           }
@@ -67,11 +68,16 @@ function Shell() {
   );
 }
 
+function AppContent() {
+  const { route } = useApp();
+  return route.path === '/' || route.path === '/landing' ? <Landing /> : <Shell />;
+}
+
 export default function App() {
   return (
     <ToastProvider>
       <AppProvider>
-        <Shell />
+        <AppContent />
       </AppProvider>
     </ToastProvider>
   );

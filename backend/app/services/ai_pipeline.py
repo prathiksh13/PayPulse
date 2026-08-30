@@ -320,6 +320,10 @@ def _classify_with_groq(failures: list[dict], anomaly_summary: list[dict]) -> di
     if not isinstance(summary, dict):
         raise ValueError("Groq summary is not an object")
     per_failure = {f.get("payment_id"): f for f in failures_out if isinstance(f, dict)}
+    for failure in failures:
+        details = per_failure.get(failure.get("payment_id")) or {}
+        failure.update(details)
+        failure.setdefault("recommended_action", "retry")
     plog(f"GROQ_REQUEST_SUCCESS model={ai_agent.settings.groq_model} "
          f"latency_ms={int((time.monotonic() - groq_started) * 1000)} "
          f"category={summary.get('category')} root_cause={summary.get('root_cause')} "
