@@ -125,8 +125,8 @@ def build_summary(db: Session, period: str = "7d", from_date: str | None = None,
     start, end, days = period_range(period, from_date, to_date)
     previous_start = start - (end - start)
     previous_end = start
-    payments_q = db.query(Payment).filter(Payment.created_at >= start, Payment.created_at < end)
-    previous_payments_q = db.query(Payment).filter(Payment.created_at >= previous_start, Payment.created_at < previous_end)
+    payments_q = db.query(Payment.payment_id, Payment.created_at, Payment.status, Payment.amount).filter(Payment.created_at >= start, Payment.created_at < end)
+    previous_payments_q = db.query(Payment.payment_id, Payment.created_at, Payment.status, Payment.amount).filter(Payment.created_at >= previous_start, Payment.created_at < previous_end)
     if merchant_id:
         payments_q = payments_q.filter(Payment.merchant_id == merchant_id)
         previous_payments_q = previous_payments_q.filter(Payment.merchant_id == merchant_id)
@@ -143,9 +143,9 @@ def build_summary(db: Session, period: str = "7d", from_date: str | None = None,
     checkout_metrics["has_data"] = bool(checkout_records)
     previous_checkout_metrics["has_data"] = bool(previous_checkout_records)
 
-    anomaly_q = db.query(Anomaly).filter(Anomaly.anomaly_type.in_(ANOMALY_TYPES), Anomaly.detected_at >= start, Anomaly.detected_at < end)
-    recovery_q = db.query(RecoveryAction).filter(RecoveryAction.created_at >= start, RecoveryAction.created_at < end)
-    event_q = db.query(CheckoutEvent).filter(CheckoutEvent.created_at >= start, CheckoutEvent.created_at < end)
+    anomaly_q = db.query(Anomaly.id, Anomaly.anomaly_type, Anomaly.severity, Anomaly.detected_at).filter(Anomaly.anomaly_type.in_(ANOMALY_TYPES), Anomaly.detected_at >= start, Anomaly.detected_at < end)
+    recovery_q = db.query(RecoveryAction.payment_id, RecoveryAction.status, RecoveryAction.risk).filter(RecoveryAction.created_at >= start, RecoveryAction.created_at < end)
+    event_q = db.query(CheckoutEvent.event_type, CheckoutEvent.error_reason).filter(CheckoutEvent.created_at >= start, CheckoutEvent.created_at < end)
     if merchant_id:
         anomaly_q = anomaly_q.filter(Anomaly.merchant_id == merchant_id)
         recovery_q = recovery_q.filter(RecoveryAction.merchant_id == merchant_id)

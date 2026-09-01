@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import {
   CircleDollarSign, CheckCircle2, AlertTriangle, Activity, RefreshCw,
   WalletCards, ArrowUpRight, Store,
@@ -30,6 +31,21 @@ export function Overview() {
   const series = useApi(() => getPaymentTrend({ from: dateRange.from, to: dateRange.to }), [dateRange]);
   const failures = useApi(() => getFailureBreakdown({ from: dateRange.from, to: dateRange.to }), [dateRange]);
   const methods = useApi(() => getMethodDistribution({ from: dateRange.from, to: dateRange.to }), [dateRange]);
+
+  const refreshAll = (opts) =>
+    Promise.all([dash.refresh(opts), payments.refresh(opts), recovery.refresh(opts), series.refresh(opts), failures.refresh(opts), methods.refresh(opts)]);
+
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshAll({ silent: true });
+    };
+    const id = setInterval(refreshWhenVisible, 20000);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, []);
 
   const s = dash.data || {};
   const has = dash.data && !dash.loading;
@@ -76,7 +92,7 @@ export function Overview() {
                 : `Summary loaded for ${dateRange.label} from the backend.`}
           </span>
         </div>
-        <Button variant="outline" size="sm" onClick={() => Promise.all([dash.refresh(), payments.refresh(), recovery.refresh(), series.refresh(), failures.refresh(), methods.refresh()]).then(() => toast('Dashboard refreshed', 'success'))}>
+        <Button variant="outline" size="sm" onClick={() => refreshAll().then(() => toast('Dashboard refreshed', 'success'))}>
           <RefreshCw size={13} /> Refresh
         </Button>
       </div>

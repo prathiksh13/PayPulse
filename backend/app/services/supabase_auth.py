@@ -138,18 +138,6 @@ class SupabaseAuthService:
         try:
             now = _utcnow_iso()
             existing = self.get_profile(user_id)
-            if existing:
-                profile_data = {
-                    "id": user_id,
-                    "email": email,
-                    "name": name,
-                    "role": _to_db_role(role),
-                    "merchant_id": merchant_id or settings.demo_merchant_id,
-                    "is_active": True,
-                    "updated_at": now,
-                }
-                response = self.service_client.table("profiles").upsert(profile_data).execute()
-                return response.data[0] if response.data else profile_data
             profile_data = {
                 "id": user_id,
                 "email": email,
@@ -157,7 +145,7 @@ class SupabaseAuthService:
                 "role": _to_db_role(role),
                 "merchant_id": merchant_id or settings.demo_merchant_id,
                 "is_active": True,
-                "created_at": now,
+                "created_at": existing.get("created_at") if existing else now,
                 "updated_at": now,
             }
             response = self.service_client.table("profiles").upsert(profile_data).execute()
@@ -177,12 +165,13 @@ class SupabaseAuthService:
         """Create/update the demo merchant. Idempotent upsert keyed on the PK."""
         try:
             now = _utcnow_iso()
+            existing = self.get_merchant(settings.demo_merchant_id)
             merchant_data = {
                 "id": settings.demo_merchant_id,
                 "name": settings.demo_merchant_name,
                 "environment": settings.demo_merchant_environment,
                 "is_demo": True,
-                "created_at": now,
+                "created_at": existing.get("created_at") if existing else now,
                 "updated_at": now,
             }
             response = self.service_client.table("merchants").upsert(merchant_data).execute()

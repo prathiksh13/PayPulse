@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..models import CheckoutEvent, CheckoutSession, Payment
+from ..utils.cache import ttl_cache
 from ..utils.helpers import calendar_days, iso, resolve_range, to_float
 
 SUCCESS_PAYMENT_STATUSES = {"success", "captured", "authorized"}
@@ -14,6 +15,7 @@ FAILURE_EVENT_TYPES = {"payment_failed", "otp_failed"}
 ABANDON_EVENT_TYPES = {"checkout_abandoned", "checkout_closed"}
 
 
+@ttl_cache(ttl=20.0)
 def _records(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> list[dict]:
     start, end = resolve_range(from_date, to_date)
     sessions_q = db.query(CheckoutSession).filter(

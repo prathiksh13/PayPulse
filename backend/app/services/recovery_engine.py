@@ -65,6 +65,26 @@ def ensure_candidates(db: Session, limit: int | None = None, amount_at_risk_cap:
     """Materialize deterministic, non-executing recommendations from live rows."""
     limit = limit or 100
     known_ids = {r.payment_id for r in db.query(RecoveryAction.payment_id).all()}
+
+    # Fast path: if all known failed/abandoned IDs already have actions, skip materialization.
+    failed_ids = {
+        pid for (pid,) in db.query(Payment.payment_id)
+        .filter(Payment.status.in_(FAILED_STATUSES))
+        .order_by(Payment.created_at.desc()).limit(400).all()
+    }
+    abandoned_ids = {
+        f"checkout:{sid}" for (sid,) in db.query(CheckoutSession.session_id)
+        .filter(CheckoutSession.status == "abandoned")
+        .order_by(CheckoutSession.started_at.desc()).limit(400).all()
+    }
+    unseen = (failed_ids - known_ids) | (abandoned_ids - known_ids)
+    if not unseen:
+        q = db.query(RecoveryAction).order_by(RecoveryAction.created_at.desc())
+        if limit:
+            q = q.limit(limit)
+        return list(q.all())
+
+    # Full path: materialize recovery actions for newly-discovered candidates.
     failed = db.query(Payment).filter(Payment.status.in_(FAILED_STATUSES)).order_by(Payment.created_at.desc()).limit(400).all()
     for payment in failed:
         if payment.payment_id in known_ids:
@@ -459,14 +479,11 @@ def recovery_history(db: Session, from_date: str | None, to_date: str | None, li
 
 def recovered_amount(db: Session, merchant_id: str | None = None) -> float:
     """Sum of amounts resolved via successful recovery outcomes over relevant payments."""
-    oq = db.query(RecoveryOutcome).filter(RecoveryOutcome.result == "success")
+    q = (
+        db.query(func.coalesce(func.sum(RecoveryAction.amount), 0))
+        .join(RecoveryOutcome, RecoveryOutcome.recovery_action_id == RecoveryAction.id)
+        .filter(RecoveryOutcome.result == "success")
+    )
     if merchant_id:
-        oq = oq.filter(RecoveryOutcome.merchant_id == merchant_id)
-    outcomes = oq.all()
-    total = 0.0
-    for o in outcomes:
-        # refunds + retries both resolve value; use the linked action's amount
-        rec = db.query(RecoveryAction).filter(RecoveryAction.id == o.recovery_action_id).first()
-        if rec and to_float(rec.amount):
-            total += to_float(rec.amount)
-    return total
+        q = q.filter(RecoveryAction.merchant_id == merchant_id)
+    return to_float(q.scalar()) or 0

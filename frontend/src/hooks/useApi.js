@@ -18,14 +18,15 @@ export function useApi(fetcher, deps = [], options = {}) {
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts = {}) => {
+    const silent = opts.silent === true;
     const id = ++runRef.current;
     setState((s) => ({
       ...s,
-      loading: true,
-      error: null,
-      unavailable: false,
-      networkError: false,
+      loading: silent ? s.loading : true,
+      error: silent ? s.error : null,
+      unavailable: silent ? s.unavailable : false,
+      networkError: silent ? s.networkError : false,
     }));
     let res;
     try {
@@ -58,6 +59,6 @@ export function useApi(fetcher, deps = [], options = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, enabled, ...deps]);
 
-  const refresh = useCallback(() => load(), [load]);
+  const refresh = useCallback((opts) => load(opts), [load]);
   return { ...state, refresh };
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Date, case, cast, func
+from sqlalchemy import Date, and_, case, cast, func
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -33,25 +33,21 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None, mer
     if merchant_id:
         payments_q = payments_q.filter(Payment.merchant_id == merchant_id)
 
-    total_txns = payments_q.count()
-    volume = (
-        payments_q.with_entities(func.coalesce(func.sum(Payment.amount), 0)).scalar() or 0
+    total_txns, volume, succeeded, failed, amount_at_risk, upi_succeeded, upi_failed = (
+        payments_q.with_entities(
+            func.count(Payment.id),
+            func.coalesce(func.sum(Payment.amount), 0),
+            func.coalesce(func.sum(case((Payment.status.in_(SUCCESS_STATUSES), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Payment.status.in_(FAILED_STATUSES), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Payment.status.in_(FAILED_STATUSES), Payment.amount), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(Payment.method == "upi", Payment.status.in_(SUCCESS_STATUSES)), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(Payment.method == "upi", Payment.status.in_(FAILED_STATUSES)), 1), else_=0)), 0),
+        ).one() or (0, 0, 0, 0, 0, 0, 0)
     )
-    succeeded = payments_q.filter(Payment.status.in_(SUCCESS_STATUSES)).count()
-    failed = payments_q.filter(Payment.status.in_(FAILED_STATUSES)).count()
 
     success_rate = (succeeded / (succeeded + failed) * 100) if (succeeded + failed) else None
 
-    amount_at_risk = (
-        payments_q.filter(Payment.status.in_(FAILED_STATUSES))
-        .with_entities(func.coalesce(func.sum(Payment.amount), 0))
-        .scalar()
-        or 0
-    )
-
     # UPI failure rate (live UPI payment rows in the window)
-    upi_succeeded = payments_q.filter(Payment.method == "upi", Payment.status.in_(SUCCESS_STATUSES)).count()
-    upi_failed = payments_q.filter(Payment.method == "upi", Payment.status.in_(FAILED_STATUSES)).count()
     upi_rate = (upi_failed / (upi_failed + upi_succeeded) * 100) if (upi_failed + upi_succeeded) else None
 
     # Amount already recovered via successful recovery outcomes
@@ -63,8 +59,13 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None, mer
     )
     if merchant_id:
         sessions_q = sessions_q.filter(CheckoutSession.merchant_id == merchant_id)
-    sessions_started = sessions_q.count()
-    sessions_abandoned = sessions_q.filter(CheckoutSession.status == "abandoned").count()
+    sessions_total, sessions_abandoned = (
+        sessions_q.with_entities(
+            func.count(CheckoutSession.id),
+            func.coalesce(func.sum(case((CheckoutSession.status == "abandoned", 1), else_=0)), 0),
+        ).one() or (0, 0)
+    )
+    sessions_started = sessions_total
     checkout_abandonment = (sessions_abandoned / sessions_started * 100) if sessions_started else None
 
     # Mandate health (% of mandates currently active out of those that reached a decision)
@@ -73,8 +74,13 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None, mer
     )
     if merchant_id:
         mandate_q = mandate_q.filter(UpiMandate.merchant_id == merchant_id)
-    mandate_active = mandate_q.filter(UpiMandate.status == "active").count()
-    mandate_failed = mandate_q.filter(UpiMandate.status.in_(("failed", "rejected"))).count()
+    _, mandate_active, mandate_failed = (
+        mandate_q.with_entities(
+            func.count(UpiMandate.id),
+            func.coalesce(func.sum(case((UpiMandate.status == "active", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((UpiMandate.status.in_(("failed", "rejected")), 1), else_=0)), 0),
+        ).one() or (0, 0, 0)
+    )
     mandate_health = (
         (mandate_active / (mandate_active + mandate_failed) * 100)
         if (mandate_active + mandate_failed)
@@ -233,10 +239,14 @@ def mandate_stats(db: Session, from_date: str | None, to_date: str | None, merch
     q = db.query(UpiMandate).filter(UpiMandate.created_at >= start, UpiMandate.created_at < end)
     if merchant_id:
         q = q.filter(UpiMandate.merchant_id == merchant_id)
-    total = q.count()
-    active = q.filter(UpiMandate.status == "active").count()
-    failed = q.filter(UpiMandate.status.in_(("failed", "rejected"))).count()
-    pending = q.filter(UpiMandate.status.in_(("pending", "processing", "attempted"))).count()
+    total, active, failed, pending = (
+        q.with_entities(
+            func.count(UpiMandate.id),
+            func.coalesce(func.sum(case((UpiMandate.status == "active", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((UpiMandate.status.in_(("failed", "rejected")), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((UpiMandate.status.in_(("pending", "processing", "attempted")), 1), else_=0)), 0),
+        ).one() or (0, 0, 0, 0)
+    )
     rate = (active / total * 100) if total else None
     return {
         "total": total,
@@ -260,17 +270,15 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None, 
         "otp_completed",
         "payment_completed",
     ]
-    stage_counts = {}
-    for st in stages:
-        q = db.query(func.count(func.distinct(CheckoutEvent.session_id))).filter(
-            CheckoutEvent.event_type == st,
-            CheckoutEvent.created_at >= start,
-            CheckoutEvent.created_at < end,
-        )
-        if merchant_id:
-            q = q.filter(CheckoutEvent.merchant_id == merchant_id)
-        n = q.scalar() or 0
-        stage_counts[st] = n
+    stage_q = db.query(CheckoutEvent.event_type, func.count(func.distinct(CheckoutEvent.session_id))).filter(
+        CheckoutEvent.event_type.in_(stages),
+        CheckoutEvent.created_at >= start,
+        CheckoutEvent.created_at < end,
+    )
+    if merchant_id:
+        stage_q = stage_q.filter(CheckoutEvent.merchant_id == merchant_id)
+    stage_counts = dict(stage_q.group_by(CheckoutEvent.event_type).all())
+    stage_counts = {st: stage_counts.get(st, 0) for st in stages}
 
     started = stage_counts.get("checkout_started", 0)
     completed = stage_counts.get("payment_completed", 0)
@@ -291,9 +299,17 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None, 
 
     # signals
     page_reloads = _extra_started(db, start, end, merchant_id=merchant_id)
-    otp_attempts = _checkout_count(db, CheckoutEvent.event_type == "otp_started", start, end, merchant_id)
-    otp_completed = _checkout_count(db, CheckoutEvent.event_type == "otp_completed", start, end, merchant_id)
-    payment_retries = _checkout_count(db, CheckoutEvent.event_type == "payment_retry", start, end, merchant_id)
+    signal_q = db.query(CheckoutEvent.event_type, func.count(CheckoutEvent.id)).filter(
+        CheckoutEvent.event_type.in_(("otp_started", "otp_completed", "payment_retry")),
+        CheckoutEvent.created_at >= start,
+        CheckoutEvent.created_at < end,
+    )
+    if merchant_id:
+        signal_q = signal_q.filter(CheckoutEvent.merchant_id == merchant_id)
+    signal_counts = dict(signal_q.group_by(CheckoutEvent.event_type).all())
+    otp_attempts = signal_counts.get("otp_started", 0)
+    otp_completed = signal_counts.get("otp_completed", 0)
+    payment_retries = signal_counts.get("payment_retry", 0)
     methods_attempted = (
         db.query(func.count(func.distinct(CheckoutEvent.method)))
         .filter(
@@ -312,12 +328,14 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None, 
     )
     if merchant_id:
         sessions_q = sessions_q.filter(CheckoutSession.merchant_id == merchant_id)
-    all_sessions = sessions_q.count()
-    avg_duration = (
-        sessions_q.with_entities(func.avg(CheckoutSession.duration_seconds)).scalar()
-        if all_sessions
-        else None
+    sessions_total, session_avg = (
+        sessions_q.with_entities(
+            func.count(CheckoutSession.id),
+            func.avg(CheckoutSession.duration_seconds),
+        ).one() or (0, None)
     )
+    all_sessions = sessions_total
+    avg_duration = session_avg if all_sessions else None
 
     # drop-off by method: sessions started with a method vs completed for that method
     method_q = db.query(CheckoutEvent.method, func.count(func.distinct(CheckoutEvent.session_id))).filter(
