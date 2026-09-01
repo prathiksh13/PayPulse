@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import AuditLog, Payment, PaymentAttempt, PaymentEvent, RecoveryAction
+from ..routers.auth import CurrentUser, get_current_user, require_admin
 from ..services.analytics import payment_series
 from ..services.razorpay_client import RazorpayClient, RazorpayError
 from ..services.serializers import (
@@ -33,13 +34,16 @@ def list_payments(
     sort: str = "created_at",
     sort_dir: str = "desc",
     group: str | None = None,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     start, end = resolve_range(from_date, to_date)
 
     if group == "day":
-        return {"items": payment_series(db, from_date, to_date, group="day"), "group": "day"}
+        return {"items": payment_series(db, from_date, to_date, group="day", merchant_id=current_user.merchant_id), "group": "day"}
 
     q = db.query(Payment).filter(Payment.created_at >= start, Payment.created_at < end)
+    if current_user.merchant_id:
+        q = q.filter(Payment.merchant_id == current_user.merchant_id)
 
     if status:
         q = q.filter(Payment.status == status)
@@ -87,6 +91,8 @@ def refund_payment_endpoint(
     payment_id: str,
     body: dict | None = None,
     db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_admin),
+    request: Request = None,
 ):
     """Refund a captured/authorized payment through Razorpay and persist the result.
 
@@ -148,17 +154,21 @@ def refund_payment_endpoint(
     payment.status = "refunded" if fully else "partially_refunded"
 
     db.add(AuditLog(
-        actor="merchant@dashboard",
+        actor=current_user.email,
         actor_type="merchant",
         action="payment.refund",
         entity_type="payment",
         entity_id=payment_id,
+        user_id=current_user.user_id,
+        actor_role=current_user.role,
+        merchant_id=payment.merchant_id,
         detail={
             "amount": amount,
             "provider_ref_id": provider_ref_id,
             "refunded_amount": payment.refunded_amount,
             "status": payment.status,
         },
+        ip=(request.client.host if request and request.client else None) if request else None,
     ))
     db.commit()
     clear_cache()
@@ -178,7 +188,7 @@ def refund_payment_endpoint(
 
 
 @router.get("/{payment_id}")
-def get_payment_detail(payment_id: str, db: Session = Depends(get_db)):
+def get_payment_detail(payment_id: str, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     payment = db.query(Payment).filter(Payment.payment_id == payment_id).first()
     if payment is None:
         raise HTTPException(status_code=404, detail="Payment not found")

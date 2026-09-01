@@ -156,6 +156,46 @@ def update_action_status(db: Session, action_id: int, status: str) -> RecoveryAc
     return action
 
 
+def approve_recovery_action(
+    db: Session,
+    action_id: int,
+    actor: str,
+    user_id: str | None = None,
+    role: str | None = None,
+    ip: str | None = None,
+) -> RecoveryAction | None:
+    """Approve a recovery action by an Admin user and record who approved it."""
+    action = db.query(RecoveryAction).filter(RecoveryAction.id == action_id).first()
+    if action is None:
+        return None
+    action.requires_approval = True
+    action.approved_by = actor
+    action.approved_by_user_id = user_id
+    action.approved_at = now_utc()
+    action.status = "approved"
+
+    db.add(AuditLog(
+        actor=actor,
+        actor_type="merchant",
+        action="recovery.approve",
+        entity_type="recovery_action",
+        entity_id=str(action.id),
+        user_id=user_id,
+        actor_role=role or "admin",
+        merchant_id=action.merchant_id,
+        detail={
+            "payment_id": action.payment_id,
+            "amount": to_float(action.amount),
+            "approved_by_user_id": user_id,
+        },
+        ip=ip,
+    ))
+
+    db.commit()
+    db.refresh(action)
+    return action
+
+
 class RecoveryBlocked(Exception):
     def __init__(self, message: str, status_code: int = 409):
         super().__init__(message)
@@ -182,6 +222,9 @@ def execute_recovery_action(
     action: str,
     actor: str = "merchant@dashboard",
     ip: str | None = None,
+    user_id: str | None = None,
+    role: str | None = None,
+    merchant_id: str | None = None,
 ) -> RecoveryAction:
     """Execute a recovery action through the policy/safety layer."""
     rec = db.query(RecoveryAction).filter(RecoveryAction.id == action_id).first()
@@ -201,6 +244,7 @@ def execute_recovery_action(
     risk = rec.risk or _risk_of(amount)
 
     actor_type = "ai_agent" if actor in ("AI_AGENT", "ai_agent", "AI") else "merchant"
+    actor_role = role or ("ai_agent" if actor_type == "ai_agent" else "analyst")
 
     # --- safety rules -------------------------------------------------------
     if action == "retry":
@@ -262,10 +306,12 @@ def execute_recovery_action(
 
     # --- execute ------------------------------------------------------------
     rec.approved_by = actor
+    rec.approved_by_user_id = user_id
+    rec.executed_by_user_id = user_id
+    rec.executed_at = now_utc()
     rec.primary_action = action
     if action == "retry":
         rec.retry_count += 1
-    rec.executed_at = now_utc()
 
     provider_ref_id = None
     result = "pending"
@@ -325,6 +371,8 @@ def execute_recovery_action(
         detail=detail,
         provider_ref_id=provider_ref_id,
         executed_by=actor,
+        executed_by_user_id=user_id,
+        merchant_id=rec.merchant_id,
     ))
 
     db.add(AuditLog(
@@ -333,6 +381,9 @@ def execute_recovery_action(
         action=f"recovery.{action}",
         entity_type="recovery_action",
         entity_id=str(rec.id),
+        user_id=user_id,
+        actor_role=actor_role,
+        merchant_id=rec.merchant_id,
         detail={
             "payment_id": rec.payment_id,
             "amount": amount,
@@ -340,6 +391,7 @@ def execute_recovery_action(
             "result": result,
             "detail": detail,
             "approved": result == "success",
+            "approved_by_user_id": user_id,
         },
         ip=ip,
     ))
@@ -376,8 +428,10 @@ def human_delta(delta: timedelta) -> str:
     return f"{minutes // 60}h {minutes % 60}m"
 
 
-def recovery_history(db: Session, from_date: str | None, to_date: str | None, limit: int = 200) -> list[dict]:
+def recovery_history(db: Session, from_date: str | None, to_date: str | None, limit: int = 200, merchant_id: str | None = None) -> list[dict]:
     q = db.query(RecoveryOutcome).order_by(RecoveryOutcome.created_at.desc())
+    if merchant_id:
+        q = q.filter(RecoveryOutcome.merchant_id == merchant_id)
     if from_date or to_date:
         from ..utils.helpers import resolve_range
 
@@ -403,11 +457,12 @@ def recovery_history(db: Session, from_date: str | None, to_date: str | None, li
     ]
 
 
-def recovered_amount(db: Session) -> float:
+def recovered_amount(db: Session, merchant_id: str | None = None) -> float:
     """Sum of amounts resolved via successful recovery outcomes over relevant payments."""
-    outcomes = (
-        db.query(RecoveryOutcome).filter(RecoveryOutcome.result == "success").all()
-    )
+    oq = db.query(RecoveryOutcome).filter(RecoveryOutcome.result == "success")
+    if merchant_id:
+        oq = oq.filter(RecoveryOutcome.merchant_id == merchant_id)
+    outcomes = oq.all()
     total = 0.0
     for o in outcomes:
         # refunds + retries both resolve value; use the linked action's amount

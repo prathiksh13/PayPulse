@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp, AppProvider } from './context/AppContext';
 import { ToastProvider } from './context/ToastContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { Sidebar } from './components/layout/Sidebar';
 import { Topbar } from './components/layout/Topbar';
 import { Overview } from './pages/Overview';
@@ -12,9 +13,10 @@ import { Anomalies } from './pages/Anomalies';
 import { RecoveryActions } from './pages/RecoveryActions';
 import { Reports } from './pages/Reports';
 import { Settings } from './pages/Settings';
+import { Login } from './pages/Login';
 import { matchRoute } from './nav';
 import { EmptyState } from './components/ui/EmptyState';
-import { LayoutDashboard, Home } from 'lucide-react';
+import { LayoutDashboard, Home, Sparkles } from 'lucide-react';
 import { navigate } from './hooks/useHashRoute';
 import { Landing } from './pages/Landing';
 
@@ -70,15 +72,61 @@ function Shell() {
 
 function AppContent() {
   const { route } = useApp();
-  return route.path === '/' || route.path === '/landing' ? <Landing /> : <Shell />;
+  const { isAuthenticated, booted } = useAuth();
+  const path = route.path;
+
+  // Route-based auth guard. The landing page is always public; app routes are
+  // protected; an already-authenticated user on /login is sent to the dashboard.
+  // Redirects happen here (via effect) so rendering never produces a wrong page.
+  useEffect(() => {
+    if (!booted) return;
+    const inApp = path !== '/' && path !== '/landing' && path !== '/login';
+    if (path === '/login' && isAuthenticated) {
+      navigate('/dashboard');
+    } else if (inApp && !isAuthenticated) {
+      navigate('/login');
+    }
+  }, [path, isAuthenticated, booted]);
+
+  if (!booted) {
+    return (
+      <div className="app-boot">
+        <div className="login-brand">
+          <span className="landing-mark"><Sparkles size={18} /></span>
+          <strong>PayPulse</strong>
+        </div>
+        <div className="app-boot-spinner" />
+      </div>
+    );
+  }
+
+  // Landing is publicly accessible (never auto-redirects to login).
+  if (path === '/' || path === '/landing') {
+    return <Landing />;
+  }
+
+  // Login page. If already authenticated, the effect redirects to /dashboard.
+  if (path === '/login') {
+    return isAuthenticated ? null : <Login />;
+  }
+
+  // Protected app routes (dashboard, payments, …). Unauthenticated users are
+  // redirected to /login by the effect — render nothing to avoid a flash.
+  if (!isAuthenticated) {
+    return null;
+  }
+
+  return <Shell />;
 }
 
 export default function App() {
   return (
     <ToastProvider>
-      <AppProvider>
-        <AppContent />
-      </AppProvider>
+      <AuthProvider>
+        <AppProvider>
+          <AppContent />
+        </AppProvider>
+      </AuthProvider>
     </ToastProvider>
   );
 }

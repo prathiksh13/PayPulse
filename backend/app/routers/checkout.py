@@ -3,6 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..routers.auth import CurrentUser, get_current_user
 from ..services import checkout_flow
 from ..services.ai_pipeline import analyze_failures
 from ..services.analytics import checkout_analytics
@@ -17,8 +18,9 @@ def get_checkout_analytics(
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
     db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    return checkout_analytics(db, from_date, to_date)
+    return checkout_analytics(db, from_date, to_date, merchant_id=current_user.merchant_id)
 
 
 @router.post("/events")

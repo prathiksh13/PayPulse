@@ -71,17 +71,23 @@ def _comparison(current: dict, previous: dict, key: str) -> dict:
     return {"current": value, "previous": baseline, "change_percent": round((value - baseline) / abs(baseline) * 100, 2), "label": None}
 
 
-def _failure_reasons(db: Session, start: datetime, end: datetime) -> list[dict]:
-    rows = db.query(Payment.failure_reason, func.count(Payment.id)).filter(
+def _failure_reasons(db: Session, start: datetime, end: datetime, merchant_id: str | None = None) -> list[dict]:
+    q = db.query(Payment.failure_reason, func.count(Payment.id)).filter(
         Payment.status.in_(tuple(FAILED)), Payment.created_at >= start, Payment.created_at < end,
-    ).group_by(Payment.failure_reason).order_by(func.count(Payment.id).desc()).limit(10).all()
+    )
+    if merchant_id:
+        q = q.filter(Payment.merchant_id == merchant_id)
+    rows = q.group_by(Payment.failure_reason).order_by(func.count(Payment.id).desc()).limit(10).all()
     return [{"name": reason or "Unknown", "reason": reason or "Unknown", "count": count} for reason, count in rows]
 
 
-def _method_performance(db: Session, start: datetime, end: datetime) -> list[dict]:
-    rows = db.query(Payment.method, Payment.status, func.count(Payment.id)).filter(
+def _method_performance(db: Session, start: datetime, end: datetime, merchant_id: str | None = None) -> list[dict]:
+    q = db.query(Payment.method, Payment.status, func.count(Payment.id)).filter(
         Payment.created_at >= start, Payment.created_at < end, Payment.method.isnot(None),
-    ).group_by(Payment.method, Payment.status).all()
+    )
+    if merchant_id:
+        q = q.filter(Payment.merchant_id == merchant_id)
+    rows = q.group_by(Payment.method, Payment.status).all()
     methods = defaultdict(lambda: {"total": 0, "failed": 0})
     for method, status, count in rows:
         if status in SUCCESS or status in FAILED:
@@ -115,14 +121,19 @@ def _checkout_trend(records: list[dict], start: datetime, end: datetime) -> list
     return [buckets.get(day.isoformat(), {"date": day.isoformat(), "attempts": 0, "completed": 0, "dropped_off": 0}) for day in calendar_days(start, end)]
 
 
-def build_summary(db: Session, period: str = "7d", from_date: str | None = None, to_date: str | None = None) -> dict:
+def build_summary(db: Session, period: str = "7d", from_date: str | None = None, to_date: str | None = None, merchant_id: str | None = None) -> dict:
     start, end, days = period_range(period, from_date, to_date)
     previous_start = start - (end - start)
     previous_end = start
-    payments = db.query(Payment).filter(Payment.created_at >= start, Payment.created_at < end).all()
-    previous_payments = db.query(Payment).filter(Payment.created_at >= previous_start, Payment.created_at < previous_end).all()
-    checkout_records = checkout_intelligence._records(db, iso(start), iso(end))
-    previous_checkout_records = checkout_intelligence._records(db, iso(previous_start), iso(previous_end))
+    payments_q = db.query(Payment).filter(Payment.created_at >= start, Payment.created_at < end)
+    previous_payments_q = db.query(Payment).filter(Payment.created_at >= previous_start, Payment.created_at < previous_end)
+    if merchant_id:
+        payments_q = payments_q.filter(Payment.merchant_id == merchant_id)
+        previous_payments_q = previous_payments_q.filter(Payment.merchant_id == merchant_id)
+    payments = payments_q.all()
+    previous_payments = previous_payments_q.all()
+    checkout_records = checkout_intelligence._records(db, iso(start), iso(end), merchant_id=merchant_id)
+    previous_checkout_records = checkout_intelligence._records(db, iso(previous_start), iso(previous_end), merchant_id=merchant_id)
     payment_metrics = _payment_metrics(payments)
     previous_payment_metrics = _payment_metrics(previous_payments)
     checkout_metrics = _checkout_metrics(checkout_records)
@@ -132,13 +143,20 @@ def build_summary(db: Session, period: str = "7d", from_date: str | None = None,
     checkout_metrics["has_data"] = bool(checkout_records)
     previous_checkout_metrics["has_data"] = bool(previous_checkout_records)
 
-    anomaly_rows = db.query(Anomaly).filter(Anomaly.anomaly_type.in_(ANOMALY_TYPES), Anomaly.detected_at >= start, Anomaly.detected_at < end).order_by(Anomaly.detected_at.desc()).all()
+    anomaly_q = db.query(Anomaly).filter(Anomaly.anomaly_type.in_(ANOMALY_TYPES), Anomaly.detected_at >= start, Anomaly.detected_at < end)
+    recovery_q = db.query(RecoveryAction).filter(RecoveryAction.created_at >= start, RecoveryAction.created_at < end)
+    event_q = db.query(CheckoutEvent).filter(CheckoutEvent.created_at >= start, CheckoutEvent.created_at < end)
+    if merchant_id:
+        anomaly_q = anomaly_q.filter(Anomaly.merchant_id == merchant_id)
+        recovery_q = recovery_q.filter(RecoveryAction.merchant_id == merchant_id)
+        event_q = event_q.filter(CheckoutEvent.merchant_id == merchant_id)
+    anomaly_rows = anomaly_q.order_by(Anomaly.detected_at.desc()).all()
     anomaly_counts = Counter(row.severity for row in anomaly_rows)
-    recovery_rows = db.query(RecoveryAction).filter(RecoveryAction.created_at >= start, RecoveryAction.created_at < end).all()
+    recovery_rows = recovery_q.all()
     payment_ids = {row.payment_id for row in payments}
     recovery_rows = [row for row in recovery_rows if row.payment_id.startswith("checkout:") or row.payment_id in payment_ids]
     recovery_counts = Counter(row.status for row in recovery_rows)
-    event_rows = db.query(CheckoutEvent).filter(CheckoutEvent.created_at >= start, CheckoutEvent.created_at < end).all()
+    event_rows = event_q.all()
     checkout_failures = Counter((event.error_reason or event.event_type) for event in event_rows if event.event_type in {"payment_failed", "otp_failed"})
 
     summary = {
@@ -158,7 +176,7 @@ def build_summary(db: Session, period: str = "7d", from_date: str | None = None,
         "range": {"from": iso(start), "to": iso(end)},
         "has_data": bool(payments or checkout_records or anomaly_rows or recovery_rows),
         "summary": summary,
-        "payments": {**payment_metrics, "failure_reasons": _failure_reasons(db, start, end), "method_performance": _method_performance(db, start, end)},
+        "payments": {**payment_metrics, "failure_reasons": _failure_reasons(db, start, end, merchant_id), "method_performance": _method_performance(db, start, end, merchant_id)},
         "checkout": {**checkout_metrics, "failure_reasons": [{"name": name, "count": count} for name, count in checkout_failures.most_common(10)]},
         "anomalies": {
             "total": len(anomaly_rows), "critical": anomaly_counts["critical"], "high": anomaly_counts["high"], "medium": anomaly_counts["medium"],
@@ -171,7 +189,7 @@ def build_summary(db: Session, period: str = "7d", from_date: str | None = None,
             "recommended": recovery_counts["recommended"] + recovery_counts["pending"] + recovery_counts["in_progress"], "dismissed": recovery_counts["dismissed"] + recovery_counts["ignored"],
         },
         "trends": {"payments": _payment_trend(payments, start, end), "checkout": _checkout_trend(checkout_records, start, end), "recovery": [{"name": key, "value": value} for key, value in recovery_counts.items()]},
-        "failure_reasons": _failure_reasons(db, start, end),
+        "failure_reasons": _failure_reasons(db, start, end, merchant_id),
         "comparisons": comparisons,
         "comparison_label": f"vs previous {days} day(s)",
     }

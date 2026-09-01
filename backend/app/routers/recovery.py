@@ -6,10 +6,12 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import CheckoutEvent, CheckoutSession, Payment, RecoveryAction, RecoveryOutcome
+from ..routers.auth import CurrentUser, get_current_user, require_admin
 from ..services.recovery_engine import (
     RecoveryBlocked,
     _can_refund,
     _can_retry,
+    approve_recovery_action,
     ensure_candidates,
     execute_recovery_action,
     FAILED_STATUSES,
@@ -34,6 +36,7 @@ def list_actions(
     status: str | None = None,
     limit: int = 200,
     page: int | None = Query(None, ge=1),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
         ensure_candidates(db, limit=500)
@@ -45,6 +48,8 @@ def list_actions(
     q = db.query(RecoveryAction).outerjoin(Payment, RecoveryAction.payment_id == Payment.payment_id).filter(
         or_(RecoveryAction.payment_id.like("checkout:%"), Payment.status.in_(FAILED_STATUSES))
     )
+    if current_user.merchant_id:
+        q = q.filter(or_(RecoveryAction.merchant_id == current_user.merchant_id, RecoveryAction.merchant_id.is_(None)))
     if status:
         q = q.filter(RecoveryAction.status == status)
     if from_date or to_date:
@@ -101,7 +106,7 @@ def list_actions(
 
 
 @router.patch("/actions/{action_id}")
-def update_status(action_id: int, body: dict, db: Session = Depends(get_db)):
+def update_status(action_id: int, body: dict, db: Session = Depends(get_db), current_user: CurrentUser = Depends(require_admin)):
     status = body.get("status") if isinstance(body, dict) else None
     try:
         action = update_action_status(db, action_id, status)
@@ -115,14 +120,39 @@ def update_status(action_id: int, body: dict, db: Session = Depends(get_db)):
     return recovery_to_dict(action)
 
 
+@router.post("/actions/{action_id}/approve")
+def approve_action(
+    action_id: int,
+    db: Session = Depends(get_db),
+    request: Request = None,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    ip = (request.client.host if request and request.client else None) if request else None
+    action = approve_recovery_action(
+        db,
+        action_id,
+        actor=current_user.email,
+        user_id=current_user.user_id,
+        role=current_user.role,
+        ip=ip,
+    )
+    if action is None:
+        raise HTTPException(status_code=404, detail="Recovery action not found")
+    result = recovery_to_dict(action)
+    result["approved_by_user_id"] = action.approved_by_user_id
+    result["approved_at"] = iso(action.approved_at)
+    return {"ok": True, "action": result}
+
+
 @router.get("/actions/history")
 def history_endpoint(
     db: Session = Depends(get_db),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
     limit: int = 200,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    items = recovery_history(db, from_date, to_date, limit)
+    items = recovery_history(db, from_date, to_date, limit, merchant_id=current_user.merchant_id)
     return {"items": items, "total": len(items), "history": items}
 
 
@@ -133,12 +163,20 @@ def execute_action(
     db: Session = Depends(get_db),
     request: Request = None,
     x_actor: str | None = Header(None, alias="X-Actor"),
+    current_user: CurrentUser = Depends(require_admin),
 ):
     action = (body or {}).get("action") if isinstance(body, dict) else None
-    actor = x_actor or "merchant@dashboard"
+    actor = x_actor or current_user.email
     ip = (request.client.host if request and request.client else None) if request else None
     try:
-        rec = execute_recovery_action(db, action_id, action, actor=actor, ip=ip)
+        rec = execute_recovery_action(
+            db, action_id, action,
+            actor=actor,
+            ip=ip,
+            user_id=current_user.user_id,
+            role=current_user.role,
+            merchant_id=current_user.merchant_id,
+        )
     except RecoveryBlocked as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
     except ValueError:
@@ -160,8 +198,11 @@ def outcomes(
     db: Session = Depends(get_db),
     payment_id: str | None = None,
     limit: int = 100,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     q = db.query(RecoveryOutcome).order_by(RecoveryOutcome.created_at.desc())
+    if current_user.merchant_id:
+        q = q.filter(RecoveryOutcome.merchant_id == current_user.merchant_id)
     if payment_id:
         q = q.filter(RecoveryOutcome.payment_id == payment_id)
     rows = q.limit(limit).all()
@@ -176,6 +217,7 @@ def outcomes(
                 "detail": o.detail,
                 "provider_ref_id": o.provider_ref_id,
                 "executed_by": o.executed_by,
+                "executed_by_user_id": o.executed_by_user_id,
                 "created_at": iso(o.created_at),
             }
             for o in rows

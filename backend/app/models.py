@@ -1,17 +1,21 @@
 from datetime import datetime, timezone
+from enum import Enum as PyEnum
 
 from sqlalchemy import (
     JSON,
     Boolean,
     Date,
     DateTime,
+    Enum,
     Float,
+    ForeignKey,
     Integer,
     Numeric,
     String,
     Text,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
 
@@ -27,6 +31,35 @@ class TimestampMixin:
     )
 
 
+class UserRole(str, PyEnum):
+    ADMIN = "admin"
+    ANALYST = "analyst"
+
+
+class Merchant(Base, TimestampMixin):
+    __tablename__ = "merchants"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    environment: Mapped[str] = mapped_column(String(16), default="test")
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    profiles = relationship("Profile", back_populates="merchant")
+
+
+class Profile(Base, TimestampMixin):
+    __tablename__ = "profiles"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # Supabase auth user ID
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(120))
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.ANALYST, index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    merchant = relationship("Merchant", back_populates="profiles")
+
+
 class Payment(Base, TimestampMixin):
     __tablename__ = "payments"
 
@@ -37,6 +70,7 @@ class Payment(Base, TimestampMixin):
     link_id: Mapped[str | None] = mapped_column(String(64), index=True)
     parent_payment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     rzp_mandate_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
     amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     currency: Mapped[str] = mapped_column(String(8), default="INR")
@@ -73,6 +107,7 @@ class PaymentEvent(Base):
     error_reason: Mapped[str | None] = mapped_column(String(255))
     payload: Mapped[dict | None] = mapped_column(JSON)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
 
 class PaymentAttempt(Base, TimestampMixin):
@@ -87,6 +122,7 @@ class PaymentAttempt(Base, TimestampMixin):
     method: Mapped[str | None] = mapped_column(String(32))
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_reason: Mapped[str | None] = mapped_column(String(255))
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
 
 class UpiMandate(Base, TimestampMixin):
@@ -96,6 +132,7 @@ class UpiMandate(Base, TimestampMixin):
     mandate_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     rzp_order_id: Mapped[str | None] = mapped_column(String(64), index=True)
     customer_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
     customer_name: Mapped[str | None] = mapped_column(String(120))
     customer_email: Mapped[str | None] = mapped_column(String(120), index=True)
@@ -122,6 +159,7 @@ class MandateEvent(Base):
     error_reason: Mapped[str | None] = mapped_column(String(255))
     payload: Mapped[dict | None] = mapped_column(JSON)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
 
 class CheckoutSession(Base, TimestampMixin):
@@ -138,6 +176,7 @@ class CheckoutSession(Base, TimestampMixin):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
 
 class CheckoutEvent(Base):
@@ -152,6 +191,7 @@ class CheckoutEvent(Base):
     error_reason: Mapped[str | None] = mapped_column(String(255))
     payload: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
 
 class Anomaly(Base, TimestampMixin):
@@ -163,6 +203,7 @@ class Anomaly(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
     metric_current: Mapped[float | None] = mapped_column(Float)
     metric_baseline: Mapped[float | None] = mapped_column(Float)
@@ -187,6 +228,8 @@ class AiDecision(Base):
     model: Mapped[str | None] = mapped_column(String(120))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
 
 
 class RecoveryAction(Base, TimestampMixin):
@@ -195,6 +238,7 @@ class RecoveryAction(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     payment_id: Mapped[str] = mapped_column(String(64), index=True)
     mandate_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
     primary_action: Mapped[str] = mapped_column(String(24), default="retry")
     recommended_action: Mapped[str | None] = mapped_column(String(96))
     reason: Mapped[str | None] = mapped_column(Text)
@@ -206,7 +250,10 @@ class RecoveryAction(Base, TimestampMixin):
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     requires_approval: Mapped[bool] = mapped_column(Boolean, default=True)
     approved_by: Mapped[str | None] = mapped_column(String(80))
+    approved_by_user_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    executed_by_user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     evidence: Mapped[str | None] = mapped_column(Text)
 
 
@@ -216,11 +263,13 @@ class RecoveryOutcome(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     recovery_action_id: Mapped[int] = mapped_column(Integer, index=True)
     payment_id: Mapped[str] = mapped_column(String(64), index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
     action: Mapped[str] = mapped_column(String(24))
     result: Mapped[str] = mapped_column(String(20), default="pending")
     detail: Mapped[str | None] = mapped_column(Text)
     provider_ref_id: Mapped[str | None] = mapped_column(String(120))
     executed_by: Mapped[str | None] = mapped_column(String(80))
+    executed_by_user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
 
 
@@ -230,6 +279,9 @@ class AuditLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     actor: Mapped[str] = mapped_column(String(120))
     actor_type: Mapped[str] = mapped_column(String(24), default="merchant")
+    actor_role: Mapped[str | None] = mapped_column(String(24))
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
     action: Mapped[str] = mapped_column(String(80))
     entity_type: Mapped[str | None] = mapped_column(String(40))
     entity_id: Mapped[str | None] = mapped_column(String(80))
@@ -248,6 +300,7 @@ class DailyReport(Base):
     period_to: Mapped[datetime.date] = mapped_column(Date)
     metrics: Mapped[dict] = mapped_column(JSON)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    merchant_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("merchants.id"), index=True)
 
 
 class AppSetting(Base):

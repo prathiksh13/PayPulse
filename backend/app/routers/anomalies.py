@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Anomaly
+from ..routers.auth import CurrentUser, get_current_user
 from ..services.anomalies import detect_with_status, resolve_anomaly
 from ..services.analytics import SUPPORTED_ANOMALY_TYPES
 from ..services.serializers import anomaly_to_dict
@@ -21,6 +22,7 @@ def list_anomalies(
     severity: str | None = None,
     page: int | None = Query(None, ge=1),
     limit: int | None = Query(None, ge=1, le=200),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     start, end = resolve_range(from_date, to_date)
 
@@ -32,6 +34,8 @@ def list_anomalies(
         raise HTTPException(status_code=503, detail="Anomaly detection data is temporarily unavailable") from exc
 
     q = db.query(Anomaly).filter(Anomaly.anomaly_type.in_(SUPPORTED_ANOMALY_TYPES), Anomaly.detected_at >= start, Anomaly.detected_at < end)
+    if current_user.merchant_id:
+        q = q.filter(Anomaly.merchant_id == current_user.merchant_id)
     if status:
         q = q.filter(Anomaly.status == status)
     if severity:
@@ -50,7 +54,7 @@ def list_anomalies(
 
 
 @router.get("/{anomaly_id}")
-def get_anomaly(anomaly_id: int, db: Session = Depends(get_db)):
+def get_anomaly(anomaly_id: int, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     a = db.query(Anomaly).filter(Anomaly.id == anomaly_id).first()
     if a is None:
         raise HTTPException(status_code=404, detail="Anomaly not found")
@@ -58,7 +62,7 @@ def get_anomaly(anomaly_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{anomaly_id}/resolve")
-def mark_resolved(anomaly_id: int, db: Session = Depends(get_db)):
+def mark_resolved(anomaly_id: int, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     a = resolve_anomaly(db, anomaly_id)
     if a is None:
         raise HTTPException(status_code=404, detail="Anomaly not found")

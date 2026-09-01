@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..config import settings
 from ..models import MandateEvent, Payment, UpiMandate
+from ..routers.auth import CurrentUser, get_current_user
 from ..services.serializers import mandate_to_dict
 from ..utils.helpers import calendar_days, iso, resolve_range
 
@@ -25,9 +26,12 @@ def list_mandates(
     group: str | None = None,
     page: int | None = Query(None, ge=1),
     limit: int | None = Query(None, ge=1, le=500),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     start, end = resolve_range(from_date, to_date)
     q = db.query(UpiMandate).filter(UpiMandate.created_at >= start, UpiMandate.created_at < end)
+    if current_user.merchant_id:
+        q = q.filter(UpiMandate.merchant_id == current_user.merchant_id)
 
     if query:
         like = f"%{query.lower()}%"
@@ -96,7 +100,7 @@ def list_mandates(
 
 
 @router.get("/{mandate_id}")
-def get_mandate_detail(mandate_id: str, db: Session = Depends(get_db)):
+def get_mandate_detail(mandate_id: str, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     m = db.query(UpiMandate).filter(UpiMandate.mandate_id == mandate_id).first()
     if m is None:
         raise HTTPException(status_code=404, detail="Mandate not found")

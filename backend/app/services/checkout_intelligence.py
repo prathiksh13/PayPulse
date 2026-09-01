@@ -14,24 +14,22 @@ FAILURE_EVENT_TYPES = {"payment_failed", "otp_failed"}
 ABANDON_EVENT_TYPES = {"checkout_abandoned", "checkout_closed"}
 
 
-def _records(db: Session, from_date: str | None, to_date: str | None) -> list[dict]:
+def _records(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> list[dict]:
     start, end = resolve_range(from_date, to_date)
-    sessions = (
-        db.query(CheckoutSession)
-        .filter(CheckoutSession.started_at >= start, CheckoutSession.started_at < end)
-        .order_by(CheckoutSession.started_at.desc())
-        .all()
+    sessions_q = db.query(CheckoutSession).filter(
+        CheckoutSession.started_at >= start, CheckoutSession.started_at < end
     )
+    if merchant_id:
+        sessions_q = sessions_q.filter(CheckoutSession.merchant_id == merchant_id)
+    sessions = sessions_q.order_by(CheckoutSession.started_at.desc()).all()
     if not sessions:
         return []
 
     session_ids = [s.session_id for s in sessions]
-    events = (
-        db.query(CheckoutEvent)
-        .filter(CheckoutEvent.session_id.in_(session_ids))
-        .order_by(CheckoutEvent.created_at.asc())
-        .all()
-    )
+    events_q = db.query(CheckoutEvent).filter(CheckoutEvent.session_id.in_(session_ids))
+    if merchant_id:
+        events_q = events_q.filter(CheckoutEvent.merchant_id == merchant_id)
+    events = events_q.order_by(CheckoutEvent.created_at.asc()).all()
     events_by_session: dict[str, list[CheckoutEvent]] = defaultdict(list)
     for event in events:
         events_by_session[event.session_id].append(event)
@@ -131,8 +129,8 @@ def _reason(events: list[CheckoutEvent], payment: Payment | None, failed: bool, 
     return None
 
 
-def summary(db: Session, from_date: str | None, to_date: str | None) -> dict:
-    records = _records(db, from_date, to_date)
+def summary(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> dict:
+    records = _records(db, from_date, to_date, merchant_id=merchant_id)
     attempts = len(records)
     completed = sum(r["completed"] for r in records)
     failed = sum(r["failed"] for r in records)
@@ -146,10 +144,10 @@ def summary(db: Session, from_date: str | None, to_date: str | None) -> dict:
     }
 
 
-def trend(db: Session, from_date: str | None, to_date: str | None) -> list[dict]:
+def trend(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> list[dict]:
     start, end = resolve_range(from_date, to_date)
     by_date: dict[str, dict] = {}
-    for record in _records(db, from_date, to_date):
+    for record in _records(db, from_date, to_date, merchant_id=merchant_id):
         day = str(record["created_at"])[:10]
         bucket = by_date.setdefault(day, {"date": day, "attempts": 0, "completed": 0, "dropped_off": 0, "failed": 0})
         bucket["attempts"] += 1
@@ -159,8 +157,8 @@ def trend(db: Session, from_date: str | None, to_date: str | None) -> list[dict]
     return [by_date.get(day.isoformat(), {"date": day.isoformat(), "attempts": 0, "completed": 0, "dropped_off": 0, "failed": 0}) for day in calendar_days(start, end)]
 
 
-def dropoff_reasons(db: Session, from_date: str | None, to_date: str | None) -> list[dict]:
-    records = _records(db, from_date, to_date)
+def dropoff_reasons(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> list[dict]:
+    records = _records(db, from_date, to_date, merchant_id=merchant_id)
     reasons: dict[str, int] = defaultdict(int)
     for record in records:
         if record["failed"] or record["dropped_off"]:
@@ -172,5 +170,5 @@ def dropoff_reasons(db: Session, from_date: str | None, to_date: str | None) -> 
     ]
 
 
-def recent(db: Session, from_date: str | None, to_date: str | None, limit: int = 20) -> list[dict]:
-    return _records(db, from_date, to_date)[:limit]
+def recent(db: Session, from_date: str | None, to_date: str | None, limit: int = 20, merchant_id: str | None = None) -> list[dict]:
+    return _records(db, from_date, to_date, merchant_id=merchant_id)[:limit]

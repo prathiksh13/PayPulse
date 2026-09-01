@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { Overview } from './Overview';
 import { navigate } from '../hooks/useHashRoute';
+import { Aurora } from '../components/Aurora';
 
 const features = [
   [CircleDollarSign, 'Payment Monitoring', 'Track payment activity, success and failure rates, methods, amounts, and payment events.'],
@@ -49,17 +50,19 @@ export function Landing() {
       </nav>
 
       <section className="landing-hero" id="top">
-        <div className="landing-hero-copy">
+        <Aurora colorStops={['#6C63FF', '#A78BFA', '#4F46E5']} amplitude={0.5} blend={0.35} speed={0.25} lightMode />
+        <div className="landing-hero-overlay" />
+        <div className="landing-hero-copy landing-hero-content">
           <div className="landing-kicker"><span className="landing-kicker-dot" /> AI-Powered Payment Operations</div>
           <h1>Payment operations,<br /><em>made intelligent.</em></h1>
           <p>An intelligent payment operations platform that monitors transactions, detects anomalies, explains payment issues, and recommends recovery actions.</p>
           <div className="landing-actions">
-            <button className="btn btn-primary" onClick={() => navigate('/dashboard')}>Open Dashboard <ChevronRight size={14} /></button>
+            <button className="btn btn-primary" onClick={() => navigate('/login')}>Login <ChevronRight size={14} /></button>
             <button className="btn btn-outline" onClick={() => scrollTo('architecture')}>View Architecture <ArrowRight size={14} /></button>
           </div>
           <div className="landing-proof"><CheckCircle2 size={14} /> Built for live, event-driven payment workflows</div>
         </div>
-        <div className="landing-preview-wrap" aria-label="Live PayPulse dashboard preview">
+        <div className="landing-preview-wrap landing-hero-content" aria-label="Live PayPulse dashboard preview">
           <div className="landing-preview-label"><span className="landing-live-dot" /> Live workspace preview</div>
           <div className="landing-preview-screen"><Overview /></div>
         </div>
@@ -106,7 +109,7 @@ export function Landing() {
         </div>
       </section>
 
-      <section className="landing-cta"><div><span className="landing-eyebrow">Ready when you are</span><h2>Bring payment operations<br />into one intelligent workspace.</h2></div><button className="btn btn-primary" onClick={() => navigate('/dashboard')}>Open PayPulse Dashboard <ChevronRight size={14} /></button></section>
+      <section className="landing-cta"><div><span className="landing-eyebrow">Ready when you are</span><h2>Bring payment operations<br />into one intelligent workspace.</h2></div><button className="btn btn-primary" onClick={() => navigate('/login')}>Open PayPulse Dashboard <ChevronRight size={14} /></button></section>
       <footer className="landing-footer"><button className="landing-brand" onClick={() => scrollTo('top')}><Mark /><strong>PayPulse</strong></button><span>AI-Powered Payment Operations</span></footer>
     </main>
   );

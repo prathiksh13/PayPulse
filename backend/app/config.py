@@ -55,6 +55,24 @@ class Settings:
             1, int(os.getenv("ANOMALY_MIN_TRANSACTIONS", "2") or 2)
         )
 
+        # Supabase Auth
+        self.supabase_url = os.getenv("SUPABASE_URL", "")
+        self.supabase_anon_key = os.getenv("SUPABASE_ANON_KEY", "")
+        self.supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+        # Demo merchant ID for shared demo data
+        self.demo_merchant_id = os.getenv("DEMO_MERCHANT_ID", "demo_merchant_001")
+
+        # Demo merchant record used by the automatic startup seed.
+        self.demo_merchant_name = os.getenv("DEMO_MERCHANT_NAME", "PayPulse Demo Merchant")
+        self.demo_merchant_environment = os.getenv("DEMO_MERCHANT_ENVIRONMENT", "test")
+
+        # Demo accounts provisioned automatically on startup (Supabase Auth).
+        self.demo_admin_email = os.getenv("DEMO_ADMIN_EMAIL", "admin@paypulse.demo")
+        self.demo_admin_password = os.getenv("DEMO_ADMIN_PASSWORD", "PayPulse@123")
+        self.demo_analyst_email = os.getenv("DEMO_ANALYST_EMAIL", "analyst@paypulse.demo")
+        self.demo_analyst_password = os.getenv("DEMO_ANALYST_PASSWORD", "PayPulse@123")
+
         # CORS
         raw = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173,http://localhost:3000")
         self.frontend_origins = [o.strip() for o in raw.split(",") if o.strip()]
@@ -70,6 +88,14 @@ class Settings:
     @property
     def groq_configured(self) -> bool:
         return bool(self.groq_api_key)
+
+    @property
+    def supabase_configured(self) -> bool:
+        return bool(self.supabase_url and self.supabase_anon_key)
+
+    @property
+    def supabase_service_configured(self) -> bool:
+        return bool(self.supabase_url and self.supabase_service_role_key)
 
     @property
     def is_postgres(self) -> bool:

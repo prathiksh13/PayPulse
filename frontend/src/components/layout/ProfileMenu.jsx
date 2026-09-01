@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Building2, ChevronDown, LogOut, Settings, User } from 'lucide-react';
 import { navigate } from '../../hooks/useHashRoute';
 import { useApp } from '../../context/AppContext';
+import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { Dropdown, DropdownItem } from '../ui/Dropdown';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -18,11 +19,15 @@ function initials(name) {
 export function ProfileMenu() {
   const toast = useToast();
   const { merchant } = useApp();
+  const { user, logout } = useAuth();
   const [logoutOpen, setLogoutOpen] = useState(false);
+  const displayName = user?.name || user?.email || 'User';
+  const roleLabel = user?.role === 'admin' ? 'Admin' : user?.role === 'analyst' ? 'Analyst' : 'User';
 
   const handleLogout = async () => {
     setLogoutOpen(false);
-    toast('Signed out', 'success', { description: 'This is a demo session. Reconnect the backend for real auth.' });
+    await logout();
+    toast('Signed out', 'success', { description: 'You have been signed out.' });
   };
 
   return (
@@ -31,7 +36,7 @@ export function ProfileMenu() {
         width={230}
         trigger={({ open }) => (
           <button className={`avatar ${open ? 'active' : ''}`} aria-label="Account menu">
-            {initials(merchant.name)}
+            {initials(displayName)}
             <ChevronDown size={13} />
           </button>
         )}
@@ -39,8 +44,8 @@ export function ProfileMenu() {
         {({ close }) => (
           <>
             <div className="menu-head">
-              <strong>{merchant.name}</strong>
-              <span>{merchant.environment} environment</span>
+              <strong>{displayName}</strong>
+              <span>{roleLabel} · {(merchant && merchant.name) || 'PayPulse Demo'}</span>
             </div>
             <div className="menu-divider" />
             <DropdownItem

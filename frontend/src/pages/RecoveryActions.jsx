@@ -4,6 +4,7 @@ import { useApi } from '../hooks/useApi';
 import { getRecoveryActions, updateRecoveryActionStatus } from '../api';
 import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 import { Panel } from '../components/ui/Panel';
 import { StatCard } from '../components/ui/StatCard';
 import { DataTable } from '../components/ui/DataTable';
@@ -17,6 +18,7 @@ import { fmtINR, fmtDateTime } from '../utils/format';
 
 export function RecoveryActions() {
   const { dateRange } = useApp();
+  const { isAdmin } = useAuth();
   const toast = useToast();
   const [priorityFilter, setPriorityFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -54,11 +56,15 @@ export function RecoveryActions() {
     { key: 'status', label: 'Status', sortable: true, render: (r) => <StatusBadge value={r.status} meta={{ ...RECOVERY_STATUS, recommended: { label: 'Recommended', tone: 'info' }, completed: { label: 'Completed', tone: 'success' }, dismissed: { label: 'Dismissed', tone: 'muted' } }} /> },
     { key: 'created_at', label: 'Created', sortable: true, render: (r) => fmtDateTime(r.created_at || r.createdAt) },
     { key: '_actions', label: 'Status', render: (r) => (
-      <div className="row-actions">
-        {r.status === 'recommended' && <Button size="sm" variant="outline" onClick={() => setStatus(r, 'in_progress')}>Investigate</Button>}
-        {['recommended', 'in_progress'].includes(r.status) && <Button size="sm" variant="outline" onClick={() => setStatus(r, 'completed')}><CheckCircle2 size={13} /> Complete</Button>}
-        {['recommended', 'in_progress'].includes(r.status) && <Button size="sm" variant="ghost" onClick={() => setStatus(r, 'dismissed')}>Dismiss</Button>}
-      </div>
+      isAdmin ? (
+        <div className="row-actions">
+          {r.status === 'recommended' && <Button size="sm" variant="outline" onClick={() => setStatus(r, 'in_progress')}>Investigate</Button>}
+          {['recommended', 'in_progress'].includes(r.status) && <Button size="sm" variant="outline" onClick={() => setStatus(r, 'completed')}><CheckCircle2 size={13} /> Complete</Button>}
+          {['recommended', 'in_progress'].includes(r.status) && <Button size="sm" variant="ghost" onClick={() => setStatus(r, 'dismissed')}>Dismiss</Button>}
+        </div>
+      ) : (
+        <span className="text-muted">View only</span>
+      )
     ) },
   ];
 

@@ -9,6 +9,7 @@ from .routers import (
     ai_agent,
     analytics,
     anomalies,
+    auth,
     cache,
     checkout,
     checkout_intelligence,
@@ -40,9 +41,28 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     init_db()
+    _ensure_demo_data()
+
+
+def _ensure_demo_data():
+    """Provision demo merchant, Auth users, and profiles on every startup.
+
+    This is non-fatal: if Supabase Auth isn't reachable/configured the app still
+    boots (protected routes simply require a valid session), and the seed simply
+    re-runs on the next start.
+    """
+    try:
+        from .services.supabase_auth import SupabaseAuthError, supabase_auth
+
+        supabase_auth.seed_demo_data()
+    except SupabaseAuthError as exc:
+        print(f"[startup] demo data seed failed: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] demo data seed failed unexpectedly: {exc}")
 
 
 app.include_router(health.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")

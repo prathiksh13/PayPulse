@@ -243,7 +243,7 @@ def _enrich_investigation(db, checkout: dict) -> dict:
     return checkout
 
 
-def run_agent(db, question: str, from_date: str | None, to_date: str | None) -> dict:
+def run_agent(db, question: str, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> dict:
     started = time.monotonic()
     ctx = {"db": db}
     question = (question or "").strip()
@@ -278,7 +278,7 @@ def run_agent(db, question: str, from_date: str | None, to_date: str | None) -> 
         source = "fallback"
 
     latency_ms = int((time.monotonic() - started) * 1000)
-    stats = analytics_svc.compute_summary(db, from_date, to_date)
+    stats = analytics_svc.compute_summary(db, from_date, to_date, merchant_id=merchant_id)
     db.add(AiDecision(
         question=question,
         answer=answer,
@@ -286,6 +286,7 @@ def run_agent(db, question: str, from_date: str | None, to_date: str | None) -> 
         stats=stats,
         model=model_used if model_used else settings.groq_model if settings.groq_configured else "deterministic-fallback",
         latency_ms=latency_ms,
+        merchant_id=merchant_id,
     ))
     db.commit()
 
@@ -424,14 +425,17 @@ def agent_status(db) -> dict:
     }
 
 
-def investigations(db) -> list[dict]:
+def investigations(db, merchant_id: str | None = None) -> list[dict]:
     from ..models import Anomaly, AiDecision
 
     out: list[dict] = []
+    anomaly_q = db.query(Anomaly).filter(Anomaly.status == "active")
+    decisions_q = db.query(AiDecision)
+    if merchant_id:
+        anomaly_q = anomaly_q.filter(Anomaly.merchant_id == merchant_id)
+        decisions_q = decisions_q.filter(AiDecision.merchant_id == merchant_id)
     anomalies = (
-        db.query(Anomaly)
-        .filter(Anomaly.status == "active")
-        .order_by(Anomaly.detected_at.desc())
+        anomaly_q.order_by(Anomaly.detected_at.desc())
         .limit(5)
         .all()
     )
@@ -459,8 +463,7 @@ def investigations(db) -> list[dict]:
         )
 
     recent_decisions = (
-        db.query(AiDecision)
-        .order_by(AiDecision.created_at.desc())
+        decisions_q.order_by(AiDecision.created_at.desc())
         .limit(4)
         .all()
     )

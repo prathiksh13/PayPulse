@@ -26,10 +26,12 @@ SUPPORTED_ANOMALY_TYPES = (
 
 
 @ttl_cache(ttl=20.0)
-def compute_summary(db: Session, from_date: str | None, to_date: str | None) -> dict:
+def compute_summary(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> dict:
     start, end = resolve_range(from_date, to_date)
 
     payments_q = db.query(Payment).filter(Payment.created_at >= start, Payment.created_at < end)
+    if merchant_id:
+        payments_q = payments_q.filter(Payment.merchant_id == merchant_id)
 
     total_txns = payments_q.count()
     volume = (
@@ -53,12 +55,14 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None) -> 
     upi_rate = (upi_failed / (upi_failed + upi_succeeded) * 100) if (upi_failed + upi_succeeded) else None
 
     # Amount already recovered via successful recovery outcomes
-    recovered = _recovered_amount(db)
+    recovered = _recovered_amount(db, merchant_id)
 
     # Checkout abandonment (% of sessions that ended abandoned)
     sessions_q = db.query(CheckoutSession).filter(
         CheckoutSession.started_at >= start, CheckoutSession.started_at < end
     )
+    if merchant_id:
+        sessions_q = sessions_q.filter(CheckoutSession.merchant_id == merchant_id)
     sessions_started = sessions_q.count()
     sessions_abandoned = sessions_q.filter(CheckoutSession.status == "abandoned").count()
     checkout_abandonment = (sessions_abandoned / sessions_started * 100) if sessions_started else None
@@ -67,6 +71,8 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None) -> 
     mandate_q = db.query(UpiMandate).filter(
         UpiMandate.created_at >= start, UpiMandate.created_at < end
     )
+    if merchant_id:
+        mandate_q = mandate_q.filter(UpiMandate.merchant_id == merchant_id)
     mandate_active = mandate_q.filter(UpiMandate.status == "active").count()
     mandate_failed = mandate_q.filter(UpiMandate.status.in_(("failed", "rejected"))).count()
     mandate_health = (
@@ -100,21 +106,23 @@ def compute_summary(db: Session, from_date: str | None, to_date: str | None) -> 
     }
 
 
-def _recovered_amount(db: Session) -> float:
+def _recovered_amount(db: Session, merchant_id: str | None = None) -> float:
     """Total amount resolved through successful recovery outcomes."""
     from ..models import RecoveryAction, RecoveryOutcome
 
-    rows = (
+    q = (
         db.query(RecoveryOutcome, RecoveryAction.amount)
         .join(RecoveryAction, RecoveryAction.id == RecoveryOutcome.recovery_action_id)
         .filter(RecoveryOutcome.result == "success")
-        .all()
     )
+    if merchant_id:
+        q = q.filter(RecoveryAction.merchant_id == merchant_id)
+    rows = q.all()
     return sum(to_float(amount) or 0 for _, amount in rows)
 
 
 @ttl_cache(ttl=20.0)
-def failure_breakdown(db: Session, from_date: str | None, to_date: str | None, limit: int = 12) -> list[dict]:
+def failure_breakdown(db: Session, from_date: str | None, to_date: str | None, limit: int = 12, merchant_id: str | None = None) -> list[dict]:
     start, end = resolve_range(from_date, to_date)
     q = (
         db.query(Payment.failure_reason, func.count(Payment.id), func.coalesce(func.sum(Payment.amount), 0))
@@ -123,12 +131,12 @@ def failure_breakdown(db: Session, from_date: str | None, to_date: str | None, l
             Payment.created_at >= start,
             Payment.created_at < end,
         )
-        .group_by(Payment.failure_reason)
-        .order_by(func.count(Payment.id).desc())
-        .limit(limit)
-        .all()
     )
-    total = sum(r[1] for r in q) or 1
+    if merchant_id:
+        q = q.filter(Payment.merchant_id == merchant_id)
+    q = q.group_by(Payment.failure_reason).order_by(func.count(Payment.id).desc()).limit(limit)
+    rows = q.all()
+    total = sum(r[1] for r in rows) or 1
     return [
         {
             "reason": r[0] or "unknown",
@@ -137,12 +145,12 @@ def failure_breakdown(db: Session, from_date: str | None, to_date: str | None, l
             "percent": round(r[1] / total * 100, 1),
             "amount": to_float(r[2]),
         }
-        for r in q
+        for r in rows
     ]
 
 
 @ttl_cache(ttl=20.0)
-def failure_code_breakdown(db: Session, from_date: str | None, to_date: str | None, limit: int = 12) -> list[dict]:
+def failure_code_breakdown(db: Session, from_date: str | None, to_date: str | None, limit: int = 12, merchant_id: str | None = None) -> list[dict]:
     start, end = resolve_range(from_date, to_date)
     q = (
         db.query(Payment.failure_code, func.count(Payment.id))
@@ -151,28 +159,29 @@ def failure_code_breakdown(db: Session, from_date: str | None, to_date: str | No
             Payment.created_at >= start,
             Payment.created_at < end,
         )
-        .group_by(Payment.failure_code)
-        .order_by(func.count(Payment.id).desc())
-        .limit(limit)
-        .all()
     )
-    return [{"code": r[0] or "unknown", "count": r[1]} for r in q]
+    if merchant_id:
+        q = q.filter(Payment.merchant_id == merchant_id)
+    q = q.group_by(Payment.failure_code).order_by(func.count(Payment.id).desc()).limit(limit)
+    rows = q.all()
+    return [{"code": r[0] or "unknown", "count": r[1]} for r in rows]
 
 
 @ttl_cache(ttl=20.0)
-def method_distribution(db: Session, from_date: str | None, to_date: str | None) -> list[dict]:
+def method_distribution(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> list[dict]:
     start, end = resolve_range(from_date, to_date)
     q = (
         db.query(Payment.method, func.count(Payment.id), func.coalesce(func.sum(Payment.amount), 0))
         .filter(Payment.created_at >= start, Payment.created_at < end, Payment.method.isnot(None))
-        .group_by(Payment.method)
-        .order_by(func.count(Payment.id).desc())
-        .all()
     )
-    total = sum(r[1] for r in q) or 1
+    if merchant_id:
+        q = q.filter(Payment.merchant_id == merchant_id)
+    q = q.group_by(Payment.method).order_by(func.count(Payment.id).desc())
+    rows = q.all()
+    total = sum(r[1] for r in rows) or 1
     return [
         {"name": r[0] or "unknown", "count": r[1], "percent": round(r[1] / total * 100, 1), "amount": to_float(r[2])}
-        for r in q
+        for r in rows
     ]
 
 
@@ -189,7 +198,7 @@ def date_bucket(db: Session, column, group: str = "day"):
 
 
 def payment_series(
-    db: Session, from_date: str | None, to_date: str | None, group: str = "day"
+    db: Session, from_date: str | None, to_date: str | None, group: str = "day", merchant_id: str | None = None
 ) -> list[dict]:
     start, end = resolve_range(from_date, to_date)
     bucket = date_bucket(db, Payment.created_at, group)
@@ -202,12 +211,13 @@ def payment_series(
             func.sum(case((Payment.status.in_(FAILED_STATUSES), 1), else_=0)),
         )
         .filter(Payment.created_at >= start, Payment.created_at < end)
-        .group_by(bucket)
-        .order_by(bucket)
-        .all()
     )
+    if merchant_id:
+        q = q.filter(Payment.merchant_id == merchant_id)
+    q = q.group_by(bucket).order_by(bucket)
+    rows = q.all()
     by_day = {day.isoformat(): {"period": day.isoformat(), "date": day.isoformat(), "count": 0, "volume": 0.0, "success": 0, "failed": 0, "success_rate": None} for day in calendar_days(start, end)} if group == "day" else {}
-    for period, count, amount, ok, bad in q:
+    for period, count, amount, ok, bad in rows:
         key = period.isoformat() if period else None
         item = {"period": iso(period) if period else None, "date": iso(period) if period else None, "count": count, "volume": to_float(amount), "success": ok, "failed": bad, "success_rate": round(ok / count * 100, 1) if count else None}
         if group == "day" and key in by_day:
@@ -218,9 +228,11 @@ def payment_series(
 
 
 @ttl_cache(ttl=20.0)
-def mandate_stats(db: Session, from_date: str | None, to_date: str | None) -> dict:
+def mandate_stats(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> dict:
     start, end = resolve_range(from_date, to_date)
     q = db.query(UpiMandate).filter(UpiMandate.created_at >= start, UpiMandate.created_at < end)
+    if merchant_id:
+        q = q.filter(UpiMandate.merchant_id == merchant_id)
     total = q.count()
     active = q.filter(UpiMandate.status == "active").count()
     failed = q.filter(UpiMandate.status.in_(("failed", "rejected"))).count()
@@ -236,7 +248,7 @@ def mandate_stats(db: Session, from_date: str | None, to_date: str | None) -> di
 
 
 @ttl_cache(ttl=20.0)
-def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) -> dict:
+def checkout_analytics(db: Session, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> dict:
     start, end = resolve_range(from_date, to_date)
 
     # funnel counts from checkout events (session telemetry)
@@ -250,16 +262,14 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
     ]
     stage_counts = {}
     for st in stages:
-        n = (
-            db.query(func.count(func.distinct(CheckoutEvent.session_id)))
-            .filter(
-                CheckoutEvent.event_type == st,
-                CheckoutEvent.created_at >= start,
-                CheckoutEvent.created_at < end,
-            )
-            .scalar()
-            or 0
+        q = db.query(func.count(func.distinct(CheckoutEvent.session_id))).filter(
+            CheckoutEvent.event_type == st,
+            CheckoutEvent.created_at >= start,
+            CheckoutEvent.created_at < end,
         )
+        if merchant_id:
+            q = q.filter(CheckoutEvent.merchant_id == merchant_id)
+        n = q.scalar() or 0
         stage_counts[st] = n
 
     started = stage_counts.get("checkout_started", 0)
@@ -280,25 +290,10 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
         )
 
     # signals
-    page_reloads = _extra_started(db, start, end)
-    otp_attempts = (
-        db.query(func.count(CheckoutEvent.id))
-        .filter(CheckoutEvent.event_type == "otp_started", CheckoutEvent.created_at >= start, CheckoutEvent.created_at < end)
-        .scalar()
-        or 0
-    )
-    otp_completed = (
-        db.query(func.count(CheckoutEvent.id))
-        .filter(CheckoutEvent.event_type == "otp_completed", CheckoutEvent.created_at >= start, CheckoutEvent.created_at < end)
-        .scalar()
-        or 0
-    )
-    payment_retries = (
-        db.query(func.count(CheckoutEvent.id))
-        .filter(CheckoutEvent.event_type == "payment_retry", CheckoutEvent.created_at >= start, CheckoutEvent.created_at < end)
-        .scalar()
-        or 0
-    )
+    page_reloads = _extra_started(db, start, end, merchant_id=merchant_id)
+    otp_attempts = _checkout_count(db, CheckoutEvent.event_type == "otp_started", start, end, merchant_id)
+    otp_completed = _checkout_count(db, CheckoutEvent.event_type == "otp_completed", start, end, merchant_id)
+    payment_retries = _checkout_count(db, CheckoutEvent.event_type == "payment_retry", start, end, merchant_id)
     methods_attempted = (
         db.query(func.count(func.distinct(CheckoutEvent.method)))
         .filter(
@@ -307,13 +302,16 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
             CheckoutEvent.created_at >= start,
             CheckoutEvent.created_at < end,
         )
-        .scalar()
-        or 0
     )
+    if merchant_id:
+        methods_attempted = methods_attempted.filter(CheckoutEvent.merchant_id == merchant_id)
+    methods_attempted = methods_attempted.scalar() or 0
 
     sessions_q = db.query(CheckoutSession).filter(
         CheckoutSession.started_at >= start, CheckoutSession.started_at < end
     )
+    if merchant_id:
+        sessions_q = sessions_q.filter(CheckoutSession.merchant_id == merchant_id)
     all_sessions = sessions_q.count()
     avg_duration = (
         sessions_q.with_entities(func.avg(CheckoutSession.duration_seconds)).scalar()
@@ -322,28 +320,23 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
     )
 
     # drop-off by method: sessions started with a method vs completed for that method
-    method_rows = (
-        db.query(CheckoutEvent.method, func.count(func.distinct(CheckoutEvent.session_id)))
-        .filter(
-            CheckoutEvent.event_type == "payment_method_selected",
-            CheckoutEvent.method.isnot(None),
-            CheckoutEvent.created_at >= start,
-            CheckoutEvent.created_at < end,
-        )
-        .group_by(CheckoutEvent.method)
-        .all()
+    method_q = db.query(CheckoutEvent.method, func.count(func.distinct(CheckoutEvent.session_id))).filter(
+        CheckoutEvent.event_type == "payment_method_selected",
+        CheckoutEvent.method.isnot(None),
+        CheckoutEvent.created_at >= start,
+        CheckoutEvent.created_at < end,
     )
-    completed_rows = (
-        db.query(CheckoutEvent.method, func.count(func.distinct(CheckoutEvent.session_id)))
-        .filter(
-            CheckoutEvent.event_type == "payment_completed",
-            CheckoutEvent.method.isnot(None),
-            CheckoutEvent.created_at >= start,
-            CheckoutEvent.created_at < end,
-        )
-        .group_by(CheckoutEvent.method)
-        .all()
+    completed_q = db.query(CheckoutEvent.method, func.count(func.distinct(CheckoutEvent.session_id))).filter(
+        CheckoutEvent.event_type == "payment_completed",
+        CheckoutEvent.method.isnot(None),
+        CheckoutEvent.created_at >= start,
+        CheckoutEvent.created_at < end,
     )
+    if merchant_id:
+        method_q = method_q.filter(CheckoutEvent.merchant_id == merchant_id)
+        completed_q = completed_q.filter(CheckoutEvent.merchant_id == merchant_id)
+    method_rows = method_q.group_by(CheckoutEvent.method).all()
+    completed_rows = completed_q.group_by(CheckoutEvent.method).all()
     comp = dict(completed_rows)
     dropoff_by_method = []
     for method, selected in method_rows:
@@ -360,22 +353,19 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
     dropoff_by_method.sort(key=lambda x: x["count"], reverse=True)
 
     # drop-off by device: sessions started per device vs sessions abandoned per device
-    dev_start = (
-        db.query(CheckoutSession.device, func.count(CheckoutSession.id))
-        .filter(CheckoutSession.started_at >= start, CheckoutSession.started_at < end)
-        .group_by(CheckoutSession.device)
-        .all()
+    dev_start_q = db.query(CheckoutSession.device, func.count(CheckoutSession.id)).filter(
+        CheckoutSession.started_at >= start, CheckoutSession.started_at < end
     )
-    dev_abandoned = (
-        db.query(CheckoutSession.device, func.count(CheckoutSession.id))
-        .filter(
-            CheckoutSession.status == "abandoned",
-            CheckoutSession.started_at >= start,
-            CheckoutSession.started_at < end,
-        )
-        .group_by(CheckoutSession.device)
-        .all()
+    dev_abandoned_q = db.query(CheckoutSession.device, func.count(CheckoutSession.id)).filter(
+        CheckoutSession.status == "abandoned",
+        CheckoutSession.started_at >= start,
+        CheckoutSession.started_at < end,
     )
+    if merchant_id:
+        dev_start_q = dev_start_q.filter(CheckoutSession.merchant_id == merchant_id)
+        dev_abandoned_q = dev_abandoned_q.filter(CheckoutSession.merchant_id == merchant_id)
+    dev_start = dev_start_q.group_by(CheckoutSession.device).all()
+    dev_abandoned = dev_abandoned_q.group_by(CheckoutSession.device).all()
     abandon = dict(dev_abandoned)
     dropoff_by_device = []
     for device, started_count in dev_start:
@@ -387,9 +377,12 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
 
     # drop-off trend (per day)
     day_bucket = date_bucket(db, CheckoutSession.started_at, "day")
-    days = db.query(day_bucket, CheckoutSession.status, func.count(CheckoutSession.id)).filter(
+    days_q = db.query(day_bucket, CheckoutSession.status, func.count(CheckoutSession.id)).filter(
         CheckoutSession.started_at >= start, CheckoutSession.started_at < end
-    ).group_by(day_bucket, CheckoutSession.status).all()
+    )
+    if merchant_id:
+        days_q = days_q.filter(CheckoutSession.merchant_id == merchant_id)
+    days = days_q.group_by(day_bucket, CheckoutSession.status).all()
     per_day: dict[str, dict] = {}
     for day, status, cnt in days:
         day_key = day.isoformat() if hasattr(day, "isoformat") else str(day) if day else "?"
@@ -443,20 +436,28 @@ def checkout_analytics(db: Session, from_date: str | None, to_date: str | None) 
     }
 
 
-def _extra_started(db: Session, start: datetime, end: datetime) -> int:
+def _extra_started(db: Session, start: datetime, end: datetime, merchant_id: str | None = None) -> int:
     """Number of sessions that sent more than one checkout_started (page reloads)."""
-    rows = (
-        db.query(CheckoutEvent.session_id, func.count(CheckoutEvent.id))
-        .filter(
-            CheckoutEvent.event_type == "checkout_started",
-            CheckoutEvent.created_at >= start,
-            CheckoutEvent.created_at < end,
-        )
-        .group_by(CheckoutEvent.session_id)
-        .having(func.count(CheckoutEvent.id) > 1)
-        .all()
+    q = db.query(CheckoutEvent.session_id, func.count(CheckoutEvent.id)).filter(
+        CheckoutEvent.event_type == "checkout_started",
+        CheckoutEvent.created_at >= start,
+        CheckoutEvent.created_at < end,
     )
+    if merchant_id:
+        q = q.filter(CheckoutEvent.merchant_id == merchant_id)
+    rows = q.group_by(CheckoutEvent.session_id).having(func.count(CheckoutEvent.id) > 1).all()
     return len(rows)
+
+
+def _checkout_count(db: Session, predicate, start: datetime, end: datetime, merchant_id: str | None = None) -> int:
+    q = db.query(func.count(CheckoutEvent.id)).filter(
+        predicate,
+        CheckoutEvent.created_at >= start,
+        CheckoutEvent.created_at < end,
+    )
+    if merchant_id:
+        q = q.filter(CheckoutEvent.merchant_id == merchant_id)
+    return q.scalar() or 0
 
 
 def _checkout_likely_cause(signals: dict, conversion_rate: float | None, started: int) -> str:

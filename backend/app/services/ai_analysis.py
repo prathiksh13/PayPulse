@@ -17,23 +17,22 @@ class AnalysisUnavailable(Exception):
     pass
 
 
-def _context(db: Session, question: str, from_date: str | None, to_date: str | None) -> dict:
+def _context(db: Session, question: str, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> dict:
     q = question.lower()
     general = not any(word in q for word in ("payment", "fail", "checkout", "drop", "mandate", "upi"))
     context: dict = {"period": {"from": from_date, "to": to_date}}
 
     if general or any(word in q for word in ("payment", "fail", "trend", "today", "attention")):
         start, end = resolve_range(from_date, to_date)
-        failures = (
-            db.query(Payment)
-            .filter(Payment.status.in_(("failed", "attempted")), Payment.created_at >= start, Payment.created_at < end)
-            .order_by(Payment.created_at.desc())
-            .limit(20)
-            .all()
+        failures_q = db.query(Payment).filter(
+            Payment.status.in_(("failed", "attempted")), Payment.created_at >= start, Payment.created_at < end
         )
+        if merchant_id:
+            failures_q = failures_q.filter(Payment.merchant_id == merchant_id)
+        failures = failures_q.order_by(Payment.created_at.desc()).limit(20).all()
         context["payments"] = {
-            "summary": analytics_svc.compute_summary(db, from_date, to_date),
-            "failure_breakdown": analytics_svc.failure_breakdown(db, from_date, to_date, limit=8),
+            "summary": analytics_svc.compute_summary(db, from_date, to_date, merchant_id=merchant_id),
+            "failure_breakdown": analytics_svc.failure_breakdown(db, from_date, to_date, limit=8, merchant_id=merchant_id),
             "recent_failures": [
                 {
                     "payment_id": p.payment_id,
@@ -49,25 +48,22 @@ def _context(db: Session, question: str, from_date: str | None, to_date: str | N
 
     if general or any(word in q for word in ("checkout", "drop", "conversion", "attention")):
         context["checkout"] = {
-            "summary": checkout_intelligence.summary(db, from_date, to_date),
-            "trend": checkout_intelligence.trend(db, from_date, to_date),
-            "dropoff_reasons": checkout_intelligence.dropoff_reasons(db, from_date, to_date),
+            "summary": checkout_intelligence.summary(db, from_date, to_date, merchant_id=merchant_id),
+            "trend": checkout_intelligence.trend(db, from_date, to_date, merchant_id=merchant_id),
+            "dropoff_reasons": checkout_intelligence.dropoff_reasons(db, from_date, to_date, merchant_id=merchant_id),
         }
 
     if general or any(word in q for word in ("mandate", "upi", "attention")):
         start, end = resolve_range(from_date, to_date)
-        mandate_summary = analytics_svc.mandate_stats(db, from_date, to_date)
-        failed_mandates = (
-            db.query(UpiMandate)
-            .filter(
-                UpiMandate.status == "failed",
-                UpiMandate.created_at >= start,
-                UpiMandate.created_at < end,
-            )
-            .order_by(UpiMandate.updated_at.desc())
-            .limit(20)
-            .all()
+        mandate_summary = analytics_svc.mandate_stats(db, from_date, to_date, merchant_id=merchant_id)
+        failed_q = db.query(UpiMandate).filter(
+            UpiMandate.status == "failed",
+            UpiMandate.created_at >= start,
+            UpiMandate.created_at < end,
         )
+        if merchant_id:
+            failed_q = failed_q.filter(UpiMandate.merchant_id == merchant_id)
+        failed_mandates = failed_q.order_by(UpiMandate.updated_at.desc()).limit(20).all()
         context["mandates"] = {
             "summary": mandate_summary,
             "failed": [
@@ -174,9 +170,9 @@ def _groq(context: dict, question: str) -> dict:
     return result
 
 
-def analyze(db: Session, question: str, from_date: str | None, to_date: str | None) -> dict:
+def analyze(db: Session, question: str, from_date: str | None, to_date: str | None, merchant_id: str | None = None) -> dict:
     started = time.monotonic()
-    context = _context(db, question, from_date, to_date)
+    context = _context(db, question, from_date, to_date, merchant_id=merchant_id)
     source = "deterministic-fallback"
     try:
         if _insufficient(context):
@@ -199,6 +195,7 @@ def analyze(db: Session, question: str, from_date: str | None, to_date: str | No
         stats={"context": context, "priority": result["priority"], "source": source},
         model=result["model"] or "deterministic-fallback",
         latency_ms=result["latency_ms"],
+        merchant_id=merchant_id,
     ))
     db.commit()
     return result

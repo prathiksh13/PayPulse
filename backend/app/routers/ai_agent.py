@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..routers.auth import CurrentUser, get_current_user
 from ..services.ai_analysis import analyze
 
 router = APIRouter(prefix="/ai-agent", tags=["ai-agent"])
@@ -13,6 +14,7 @@ def analyze_request(
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
     db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     question = str((body or {}).get("question") or "").strip()
     if not question:
@@ -20,7 +22,7 @@ def analyze_request(
     if len(question) > 1000:
         raise HTTPException(status_code=422, detail="question must be 1000 characters or fewer")
     try:
-        return analyze(db, question, (body or {}).get("from") or from_date, (body or {}).get("to") or to_date)
+        return analyze(db, question, (body or {}).get("from") or from_date, (body or {}).get("to") or to_date, merchant_id=current_user.merchant_id)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}") from exc

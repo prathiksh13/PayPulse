@@ -1,5 +1,7 @@
 const BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
 
+import { getAccessToken } from '../auth/token';
+
 export function qs(params = {}) {
   const sp = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
@@ -23,10 +25,17 @@ export function qs(params = {}) {
  */
 export async function request(path, options = {}) {
   const { headers, ...rest } = options;
+  const token = getAccessToken();
+  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+  let requestBody = rest.body;
+  if (rest.body && typeof rest.body !== 'string' && !(rest.body instanceof FormData)) {
+    requestBody = JSON.stringify(rest.body);
+    rest = { ...rest, body: requestBody };
+  }
   try {
     const res = await fetch(`${BASE}${path}`, {
       ...rest,
-      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+      headers: { 'Content-Type': 'application/json', ...authHeaders, ...(headers || {}) },
     });
     if (!res.ok) {
       let detail;
